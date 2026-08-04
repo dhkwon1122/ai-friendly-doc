@@ -7,6 +7,7 @@
   Cloud는 <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener">API 토큰</a> +
   이메일(basic), Server/Data Center는 Personal Access Token(bearer)을 사용하세요.
 </p>
+{% if onboarding %}<p class="info">분석을 시작하려면 먼저 Confluence 연동 정보를 입력해주세요.</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 {% if saved %}<p class="notice">저장되었습니다.</p>{% endif %}
 <form method="post" action="/settings">

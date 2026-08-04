@@ -112,7 +112,8 @@ def settings_form(request: Request):
     if not user:
         return RedirectResponse("/login", status_code=303)
     creds = db.get_credentials(user.id)
-    return render(request, "settings.html", creds=creds)
+    onboarding = request.query_params.get("onboarding") == "1"
+    return render(request, "settings.html", creds=creds, onboarding=onboarding)
 
 
 @app.post("/settings", response_class=HTMLResponse)
@@ -186,6 +187,8 @@ def analyze_form(request: Request):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    if not db.get_credentials(user.id):
+        return RedirectResponse("/settings?onboarding=1", status_code=303)
     return render(request, "analyze.html")
 
 
