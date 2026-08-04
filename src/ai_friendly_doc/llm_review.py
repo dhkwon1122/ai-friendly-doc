@@ -1,7 +1,7 @@
 """LLM(사내 vLLM 등 OpenAI 호환 API)을 이용한 심층 문서 검토.
 
 규칙 엔진(rules/)이 구조적인 문제(제목 계층, 표 헤더, alt 텍스트 등)를
-잡는다면, 이 모듈은 실제 내용을 LLM에게 읽혀서 두 가지를 한다:
+잡는다면, 이 모듈은 실제 내용을 LLM에게 읽혀서 세 가지를 한다:
 
 1. 규칙 엔진이 잡지 못하는 문제(모호한 지시어, 설명 없는 사내 용어, 생략된
    전제, 불명확한 결론 등)를 새로 찾는다.
@@ -9,6 +9,8 @@
    복사해서 붙여넣을 수 있는 실제 수정 텍스트를 만들어 채워준다. (규칙
    엔진은 "표에 헤더가 없다"는 사실은 알지만 실제로 어떤 문구를 채워야
    하는지는 모르고, LLM은 문서 내용을 읽었으니 채울 수 있다.)
+3. 위 1, 2번을 모두 반영한, 문서 전체의 수정본(revised_document)을 만든다.
+   웹 UI에서 원본과 나란히 보여주는 데 쓴다.
 
 LLM_BASE_URL이 설정된 경우에만 동작하며, analyzer.analyze_page()가
 설정 여부를 보고 자동으로 호출한다.
@@ -29,6 +31,7 @@ from .rules import Severity, Suggestion
 
 DEFAULT_MAX_INPUT_CHARS = 12000
 DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_MAX_OUTPUT_TOKENS = 4096  # 문서 전체 수정본까지 만들어야 해서 넉넉하게
 
 _HEADING_LEVELS = {f"h{i}": i for i in range(1, 7)}
 
@@ -56,7 +59,7 @@ SYSTEM_PROMPT = f"""\
 {_guideline_checklist()}
 
 사용자 메시지에는 문서 본문이 주어지고, 이미 구조 검사(규칙 엔진)로 발견된
-문제 목록이 번호와 함께 같이 주어질 수 있습니다. 다음 두 가지를 모두
+문제 목록이 번호와 함께 같이 주어질 수 있습니다. 다음 세 가지를 모두
 수행하세요:
 
 1. **새 문제 찾기**: 위 가이드라인 관점에서, 아직 목록에 없는 문제를 새로
@@ -69,6 +72,10 @@ SYSTEM_PROMPT = f"""\
    확실히 알 수 없는 부분(예: 이미지의 실제 내용, 정확한 날짜)은 문서 안의
    단서로 최선을 다해 추정하고, 추정이라는 것을 짧게 표시하세요
    (예: "(파일명 기준 추정, 확인 필요)").
+3. **문서 전체 수정본 작성**: 위 1, 2번에서 만든 새 발견 사항과 수정안을
+   모두 반영해서, 문서 처음부터 끝까지 완전히 다시 쓴 수정본을 만드세요.
+   원본과 같은 평문 형식(제목은 #/##/###, 표는 | a | b |, 목록은 -)을
+   유지하고, 문제가 없던 부분은 그대로 두세요.
 
 새로 찾은 문제는 다음 필드를 가진 객체로 만드세요. "suggestion"은 조언이
 아니라 실제로 붙여넣을 수 있는 구체적인 문구/문장이어야 합니다:
@@ -84,14 +91,23 @@ SYSTEM_PROMPT = f"""\
 
 다음 JSON 객체 형식으로만 답하세요. 다른 설명이나 코드펜스 없이 이 객체만
 출력합니다:
-{{"new_findings": [...], "rule_fixes": [...]}}
+{{"new_findings": [...], "rule_fixes": [...], "revised_document": "문서 전체 수정본"}}
 
-찾은 문제나 만들 수정안이 없으면 해당 배열을 빈 배열로 두세요.
+찾은 문제나 만들 수정안이 없으면 해당 배열을 빈 배열로 두되, revised_document는
+항상 채우세요 (고칠 게 없으면 원본과 같은 내용을 그대로 넣으면 됩니다).
 """
 
 
 class LLMReviewError(RuntimeError):
     """LLM 호출/응답 처리 중 문제가 생겼을 때 발생."""
+
+
+@dataclasses.dataclass
+class LLMReviewResult:
+    suggestions: list[Suggestion]
+    # 문서 전체에 새 발견/수정안을 반영해 다시 쓴 평문. LLM이 안 만들었거나
+    # LLM 자체가 설정 안 돼 있으면 None (원본 문서는 별도로 항상 존재함).
+    revised_document: str | None
 
 
 def is_llm_configured() -> bool:
@@ -173,7 +189,8 @@ def _strip_code_fence(text: str) -> str:
 
 
 def _parse_llm_response(raw: str) -> dict:
-    """{"new_findings": [...], "rule_fixes": [...]} 형태의 JSON 객체를 파싱한다."""
+    """{"new_findings": [...], "rule_fixes": [...], "revised_document": "..."} 형태의
+    JSON 객체를 파싱한다."""
     text = _strip_code_fence(raw)
 
     try:
@@ -195,7 +212,11 @@ def _parse_llm_response(raw: str) -> dict:
     if not isinstance(new_findings, list) or not isinstance(rule_fixes, list):
         raise LLMReviewError("LLM 응답의 new_findings/rule_fixes가 배열 형식이 아닙니다.")
 
-    return {"new_findings": new_findings, "rule_fixes": rule_fixes}
+    revised_document = data.get("revised_document")
+    if revised_document is not None and not isinstance(revised_document, str):
+        raise LLMReviewError("LLM 응답의 revised_document가 문자열 형식이 아닙니다.")
+
+    return {"new_findings": new_findings, "rule_fixes": rule_fixes, "revised_document": revised_document}
 
 
 def _to_suggestions(items: list[dict]) -> list[Suggestion]:
@@ -255,22 +276,24 @@ def _build_user_content(page: ConfluencePage, text: str, rule_suggestions: list[
     return "\n".join(parts)
 
 
-def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> list[Suggestion]:
+def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> LLMReviewResult:
     """설정된 LLM으로 페이지 내용을 심층 검토한다.
 
     rule_suggestions를 넘기면, 그 각각에 대해 LLM이 실제 문서 내용을 참고해
     만든 구체적인(복사-붙여넣기 가능한) 수정안으로 suggestion 필드를 갱신하고,
     거기에 LLM이 새로 찾은 문제들을 더해서 반환한다. rule_suggestions를 안
     넘기면 새로 찾은 문제들만 반환한다 (규칙 없이 LLM 검토만 쓰는 경우).
+    거기에 더해 문서 전체를 다시 쓴 수정본(revised_document)도 만든다.
 
-    LLM_BASE_URL이 없으면 rule_suggestions를 그대로(원래 조언 형태로) 반환한다.
-    그 외 설정 누락이나 호출/응답 실패는 LLMReviewError로 감싸서 던진다
-    (호출자가 나머지 규칙 기반 결과는 살리고 이 부분만 실패로 표시할 수 있도록).
+    LLM_BASE_URL이 없으면 rule_suggestions를 그대로(원래 조언 형태로) 담고
+    revised_document는 None인 결과를 반환한다. 그 외 설정 누락이나 호출/응답
+    실패는 LLMReviewError로 감싸서 던진다 (호출자가 나머지 규칙 기반 결과는
+    살리고 이 부분만 실패로 표시할 수 있도록).
     """
     rule_suggestions = rule_suggestions or []
 
     if not is_llm_configured():
-        return list(rule_suggestions)
+        return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
 
     model = os.environ.get("LLM_MODEL")
     if not model:
@@ -280,10 +303,12 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
     max_chars = int(max_chars_raw) if max_chars_raw else DEFAULT_MAX_INPUT_CHARS
     timeout_raw = os.environ.get("LLM_TIMEOUT_SECONDS")
     timeout = float(timeout_raw) if timeout_raw else DEFAULT_TIMEOUT_SECONDS
+    max_output_tokens_raw = os.environ.get("LLM_MAX_OUTPUT_TOKENS")
+    max_output_tokens = int(max_output_tokens_raw) if max_output_tokens_raw else DEFAULT_MAX_OUTPUT_TOKENS
 
     text = storage_html_to_plain_text(page.storage_html, max_chars=max_chars)
     if not text.strip():
-        return list(rule_suggestions)
+        return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
 
     user_content = _build_user_content(page, text, rule_suggestions)
 
@@ -296,6 +321,7 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
             ],
             temperature=0.2,
             timeout=timeout,
+            max_tokens=max_output_tokens,
         )
     except Exception as e:  # noqa: BLE001 - 원인 그대로 사용자에게 보여줌
         raise LLMReviewError(f"LLM 호출에 실패했습니다: {e}") from e
@@ -305,5 +331,6 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
 
     updated_rule_suggestions = _apply_rule_fixes(rule_suggestions, data["rule_fixes"])
     new_findings = _to_suggestions(data["new_findings"])
+    revised_document = data["revised_document"] or None
 
-    return updated_rule_suggestions + new_findings
+    return LLMReviewResult(suggestions=updated_rule_suggestions + new_findings, revised_document=revised_document)

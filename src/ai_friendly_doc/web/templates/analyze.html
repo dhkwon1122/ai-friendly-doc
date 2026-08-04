@@ -2,6 +2,26 @@
 {% block title %}분석 - ai-friendly-doc{% endblock %}
 {% block content %}
 <h1>Confluence 문서 분석</h1>
+
+{% if core_guidelines %}
+<details class="guideline-ref">
+  <summary>AI-Friendly 문서 작성 가이드라인 (핵심 {{ core_guidelines|length }} + 추가 권장 {{ extra_guidelines|length }})</summary>
+  <p class="hint">핵심 가이드라인은 점수 산정 기준이 되고, 추가 권장 가이드는 제안으로만 나오고 점수에는 반영되지 않습니다.</p>
+  <h3>핵심 가이드라인</h3>
+  <ol>
+    {% for g in core_guidelines %}
+    <li>{{ g.label }}</li>
+    {% endfor %}
+  </ol>
+  <h3>추가 권장 가이드</h3>
+  <ol>
+    {% for g in extra_guidelines %}
+    <li>{{ g.label }}</li>
+    {% endfor %}
+  </ol>
+</details>
+{% endif %}
+
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <form method="post" action="/analyze">
   <fieldset>
@@ -21,6 +41,32 @@
     <button class="secondary" type="submit">Markdown으로 다운로드</button>
   </form>
   {{ report_html | safe }}
+</div>
+{% endif %}
+
+{% if reports %}
+<div class="doc-compare">
+  <h2>원본 vs 수정본</h2>
+  <p class="hint">페이지별로 펼쳐서 원본 문서와 제안 사항이 반영된 수정본을 나란히 비교할 수 있습니다.</p>
+  {% for r in reports %}
+  <details class="doc-compare-page" {% if loop.first %}open{% endif %}>
+    <summary>{{ r.page.title }}</summary>
+    <div class="doc-compare-columns">
+      <div class="doc-pane">
+        <h4>원본</h4>
+        <pre>{{ r.original_document }}</pre>
+      </div>
+      <div class="doc-pane">
+        <h4>수정본</h4>
+        {% if r.revised_document %}
+        <pre>{{ r.revised_document }}</pre>
+        {% else %}
+        <p class="hint">LLM 검토가 설정되어 있지 않거나 이번 검토에서 실패해 수정본을 만들지 못했습니다. 설정 페이지에서 LLM 연동 상태를 확인하세요.</p>
+        {% endif %}
+      </div>
+    </div>
+  </details>
+  {% endfor %}
 </div>
 {% endif %}
 {% endblock %}

@@ -45,6 +45,7 @@ GUIDELINES: list[Guideline] = [
 
 GUIDELINES_BY_ID: dict[str, Guideline] = {g.id: g for g in GUIDELINES}
 CORE_GUIDELINES: list[Guideline] = [g for g in GUIDELINES if g.tier == "core"]
+EXTRA_GUIDELINES: list[Guideline] = [g for g in GUIDELINES if g.tier == "extra"]
 
 
 @dataclass(frozen=True)

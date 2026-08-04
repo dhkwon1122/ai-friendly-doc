@@ -3,6 +3,7 @@ import pytest
 from ai_friendly_doc.confluence_client import ConfluencePage
 from ai_friendly_doc.llm_review import (
     LLMReviewError,
+    LLMReviewResult,
     _apply_rule_fixes,
     _build_user_content,
     _parse_llm_response,
@@ -93,12 +94,22 @@ def test_parse_llm_response_code_fenced():
 def test_parse_llm_response_extracts_object_from_surrounding_prose():
     raw = '결과입니다:\n{"new_findings": [], "rule_fixes": []}\n감사합니다.'
     data = _parse_llm_response(raw)
-    assert data == {"new_findings": [], "rule_fixes": []}
+    assert data == {"new_findings": [], "rule_fixes": [], "revised_document": None}
 
 
 def test_parse_llm_response_defaults_missing_keys_to_empty_lists():
     data = _parse_llm_response("{}")
-    assert data == {"new_findings": [], "rule_fixes": []}
+    assert data == {"new_findings": [], "rule_fixes": [], "revised_document": None}
+
+
+def test_parse_llm_response_extracts_revised_document():
+    data = _parse_llm_response('{"new_findings": [], "rule_fixes": [], "revised_document": "# 수정본"}')
+    assert data["revised_document"] == "# 수정본"
+
+
+def test_parse_llm_response_raises_when_revised_document_not_a_string():
+    with pytest.raises(LLMReviewError):
+        _parse_llm_response('{"new_findings": [], "rule_fixes": [], "revised_document": 123}')
 
 
 def test_parse_llm_response_raises_on_garbage():
@@ -216,12 +227,14 @@ def test_review_with_llm_returns_rule_suggestions_unchanged_when_not_configured(
     assert is_llm_configured() is False
     rule_suggestions = [make_rule_suggestion(suggestion="원래 조언")]
     result = review_with_llm(make_page(), rule_suggestions=rule_suggestions)
-    assert result == rule_suggestions
+    assert result == LLMReviewResult(suggestions=rule_suggestions, revised_document=None)
 
 
 def test_review_with_llm_returns_empty_when_not_configured_and_no_rules(monkeypatch):
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
-    assert review_with_llm(make_page()) == []
+    result = review_with_llm(make_page())
+    assert result.suggestions == []
+    assert result.revised_document is None
 
 
 def test_review_with_llm_raises_when_model_missing(monkeypatch):
@@ -276,7 +289,8 @@ def test_review_with_llm_fills_in_rule_fix_and_adds_new_finding(monkeypatch):
         content=(
             '{"new_findings": [{"severity": "warning", "message": "모호한 표현", '
             '"suggestion": "이것 -> 배포 스크립트", "guideline": "core-1"}], '
-            '"rule_fixes": [{"index": 0, "fix": "alt=\\"배포 아키텍처 다이어그램\\""}]}'
+            '"rule_fixes": [{"index": 0, "fix": "alt=\\"배포 아키텍처 다이어그램\\""}], '
+            '"revised_document": "# 수정본 전체"}'
         )
     )
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
@@ -284,11 +298,12 @@ def test_review_with_llm_fills_in_rule_fix_and_adds_new_finding(monkeypatch):
     rule_suggestions = [make_rule_suggestion(suggestion="alt 텍스트를 추가하세요.")]
     result = review_with_llm(make_page("<p>이거 해두세요.</p>"), rule_suggestions=rule_suggestions)
 
-    assert len(result) == 2
-    fixed_rule_suggestion = next(s for s in result if s.rule_id == "missing-alt-text")
+    assert len(result.suggestions) == 2
+    fixed_rule_suggestion = next(s for s in result.suggestions if s.rule_id == "missing-alt-text")
     assert fixed_rule_suggestion.suggestion == 'alt="배포 아키텍처 다이어그램"'
-    new_finding = next(s for s in result if s.rule_id == "llm-review")
+    new_finding = next(s for s in result.suggestions if s.rule_id == "llm-review")
     assert new_finding.guideline_id == "core-1"
+    assert result.revised_document == "# 수정본 전체"
     assert fake_client.chat.completions.last_kwargs["model"] == "qwen2.5-32b-instruct"
 
 
@@ -310,7 +325,7 @@ def test_review_with_llm_skips_empty_document(monkeypatch):
 
     rule_suggestions = [make_rule_suggestion(suggestion="원래 조언")]
     result = review_with_llm(make_page(""), rule_suggestions=rule_suggestions)
-    assert result == rule_suggestions
+    assert result == LLMReviewResult(suggestions=rule_suggestions, revised_document=None)
     assert fake_client.chat.completions.last_kwargs is None
 
 
