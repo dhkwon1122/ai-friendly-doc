@@ -72,7 +72,7 @@ ai-friendly-doc-web
 1. `/register`에서 계정 생성 (아이디 + 비밀번호, bcrypt로 해시 저장)
 2. `/settings`에서 본인의 Confluence Base URL / 인증 방식(Cloud는 basic+이메일,
    Server·DC는 bearer PAT) / API 토큰 입력 → 토큰은 `FERNET_KEY`로 암호화되어
-   SQLite(`AI_FRIENDLY_DOC_DB`, 기본 `ai_friendly_doc.db`)에 저장
+   DB에 저장
 3. `/analyze`에서 페이지 ID(들) 또는 스페이스 키를 입력해 분석 실행 →
    결과는 화면에 바로 렌더링되고, "Markdown으로 다운로드" 버튼으로 파일도
    받을 수 있음. Write API는 여전히 호출하지 않으므로 원본 문서는 변경되지
@@ -83,6 +83,59 @@ CLI와 마찬가지로 사용자별 토큰은 조회에만 쓰이며, 각 사용
 
 > 운영 배포 시에는 HTTPS 뒤에 두는 것을 권장합니다(세션 쿠키/토큰 입력이
 > 평문 HTTP로 오가지 않도록).
+
+### 사용자/토큰 저장소: SQLite(로컬) vs PostgreSQL(서버)
+
+`DATABASE_URL`을 지정하지 않으면 로컬 SQLite 파일(`AI_FRIENDLY_DOC_DB`, 기본
+`ai_friendly_doc.db`)을 쓴다. 서버에서는 PostgreSQL을 쓰도록 아래처럼
+`DATABASE_URL`을 지정하면 된다(테이블은 앱 기동 시 자동 생성됨):
+
+```
+DATABASE_URL=postgresql+psycopg2://<user>:<password>@<host>:5432/<dbname>
+```
+
+## Docker로 배포하기
+
+이 서버에는 이미 PostgreSQL과 vLLM이 docker로 떠 있고, 그 postgres는 호스트에
+포트가 노출되어 있다고 가정한다. 이 앱은 별도 컨테이너로 떠서 호스트에 노출된
+포트로 postgres에 접속하는 구조다 (같은 docker 네트워크에 조인하지 않음).
+
+1. **앱 전용 DB/유저 생성** (기존 postgres 컨테이너 안에서 슈퍼유저로 1회 실행):
+
+   ```bash
+   docker exec -i <postgres-container-name> psql -U postgres < scripts/init_postgres.sql
+   ```
+
+   `scripts/init_postgres.sql`의 비밀번호(`change-me`)는 실제 운영 값으로 바꿔서 실행할 것.
+
+2. **`.env` 준비**
+
+   ```bash
+   cp .env.example .env
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"  # FERNET_KEY
+   python -c "import secrets; print(secrets.token_hex(32))"                                    # SESSION_SECRET
+   ```
+
+   `.env`에서 `DATABASE_URL`의 주석을 풀고 값을 채운다. 앱 컨테이너는
+   `host.docker.internal`로 호스트에 접근하므로(= `docker-compose.yml`의
+   `extra_hosts` 설정), postgres가 호스트의 5432 포트로 노출되어 있다면:
+
+   ```
+   DATABASE_URL=postgresql+psycopg2://ai_friendly_doc:change-me@host.docker.internal:5432/ai_friendly_doc
+   ```
+
+3. **빌드 & 기동**
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+   기본적으로 호스트의 8000번 포트로 뜬다 (`docker-compose.yml`의 `ports` 수정 가능).
+
+4. 로그 확인: `docker compose logs -f web`
+
+vLLM은 현재 이 앱에서 사용하지 않지만(향후 LLM 기반 재작성 제안에 쓸 수 있음),
+같은 호스트-포트 노출 방식으로 나중에 연결할 수 있다.
 
 ## 리포트 예시 구조
 
@@ -145,10 +198,13 @@ src/ai_friendly_doc/
     starter.py           # 스타터 규칙 구현
   web/
     app.py               # FastAPI 라우트 (회원가입/로그인/설정/분석)
-    db.py                 # 사용자/Confluence 인증정보 SQLite 저장소
+    db.py                 # 사용자/Confluence 인증정보 저장소 (SQLAlchemy, SQLite/PostgreSQL 겸용)
     security.py           # 비밀번호 해시(bcrypt), 토큰 암호화(Fernet)
     __main__.py            # `python -m ai_friendly_doc.web` 진입점
     templates/             # Jinja2 HTML 템플릿
 tests/
   test_rules.py
+Dockerfile
+docker-compose.yml
+scripts/init_postgres.sql   # 서버 postgres에 앱 전용 DB/유저 생성
 ```

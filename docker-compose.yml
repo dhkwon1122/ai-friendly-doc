@@ -1,0 +1,17 @@
+services:
+  web:
+    build: .
+    image: ai-friendly-doc-web:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+    extra_hosts:
+      # 이 서버에서 이미 docker로 떠 있는 PostgreSQL(및 vLLM)에 호스트로
+      # 노출된 포트로 접속하기 위함. .env의 DATABASE_URL에서
+      # host.docker.internal을 postgres 접속 호스트로 사용하면 된다.
+      - "host.docker.internal:host-gateway"
