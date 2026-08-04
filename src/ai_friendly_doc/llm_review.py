@@ -31,7 +31,7 @@ from .rules import Severity, Suggestion
 
 DEFAULT_MAX_INPUT_CHARS = 12000
 DEFAULT_TIMEOUT_SECONDS = 60.0
-DEFAULT_MAX_OUTPUT_TOKENS = 4096  # 문서 전체 수정본까지 만들어야 해서 넉넉하게
+DEFAULT_MAX_OUTPUT_TOKENS = 4096  # 최소값. 실제로는 입력 길이에 비례해 늘어남 (review_with_llm 참고)
 
 _HEADING_LEVELS = {f"h{i}": i for i in range(1, 7)}
 
@@ -303,12 +303,21 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
     max_chars = int(max_chars_raw) if max_chars_raw else DEFAULT_MAX_INPUT_CHARS
     timeout_raw = os.environ.get("LLM_TIMEOUT_SECONDS")
     timeout = float(timeout_raw) if timeout_raw else DEFAULT_TIMEOUT_SECONDS
-    max_output_tokens_raw = os.environ.get("LLM_MAX_OUTPUT_TOKENS")
-    max_output_tokens = int(max_output_tokens_raw) if max_output_tokens_raw else DEFAULT_MAX_OUTPUT_TOKENS
 
     text = storage_html_to_plain_text(page.storage_html, max_chars=max_chars)
     if not text.strip():
         return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
+
+    max_output_tokens_raw = os.environ.get("LLM_MAX_OUTPUT_TOKENS")
+    if max_output_tokens_raw:
+        max_output_tokens = int(max_output_tokens_raw)
+    else:
+        # revised_document는 문서 전체를 거의 그대로(+ 수정 반영) 다시 써야 해서,
+        # 출력 길이가 입력 길이에 비례한다. 고정값으로 두면 문서가 조금만 길어져도
+        # 응답이 중간에 잘려 JSON 파싱이 매번 실패한다 - 입력 길이에 맞춰 늘린다.
+        # 한글은 토큰당 글자 수가 영어보다 적어(토큰을 더 많이 씀) 글자당 2토큰으로
+        # 넉넉하게 잡고, JSON 이스케이프/new_findings 등 부가 출력분도 버퍼로 더한다.
+        max_output_tokens = max(DEFAULT_MAX_OUTPUT_TOKENS, len(text) * 2 + 1024)
 
     user_content = _build_user_content(page, text, rule_suggestions)
 
@@ -326,7 +335,14 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
     except Exception as e:  # noqa: BLE001 - 원인 그대로 사용자에게 보여줌
         raise LLMReviewError(f"LLM 호출에 실패했습니다: {e}") from e
 
-    raw = response.choices[0].message.content or ""
+    choice = response.choices[0]
+    if getattr(choice, "finish_reason", None) == "length":
+        raise LLMReviewError(
+            f"LLM 응답이 최대 토큰({max_output_tokens}) 제한으로 중간에 잘렸습니다. "
+            "LLM_MAX_OUTPUT_TOKENS를 늘리거나 LLM_MAX_INPUT_CHARS를 줄여서 다시 시도하세요."
+        )
+
+    raw = choice.message.content or ""
     data = _parse_llm_response(raw)
 
     updated_rule_suggestions = _apply_rule_fixes(rule_suggestions, data["rule_fixes"])

@@ -250,26 +250,28 @@ class _FakeMessage:
 
 
 class _FakeChoice:
-    def __init__(self, content):
+    def __init__(self, content, finish_reason="stop"):
         self.message = _FakeMessage(content)
+        self.finish_reason = finish_reason
 
 
 class _FakeResponse:
-    def __init__(self, content):
-        self.choices = [_FakeChoice(content)]
+    def __init__(self, content, finish_reason="stop"):
+        self.choices = [_FakeChoice(content, finish_reason=finish_reason)]
 
 
 class _FakeCompletions:
-    def __init__(self, content=None, exc=None):
+    def __init__(self, content=None, exc=None, finish_reason="stop"):
         self._content = content
         self._exc = exc
+        self._finish_reason = finish_reason
         self.last_kwargs = None
 
     def create(self, **kwargs):
         self.last_kwargs = kwargs
         if self._exc:
             raise self._exc
-        return _FakeResponse(self._content)
+        return _FakeResponse(self._content, finish_reason=self._finish_reason)
 
 
 class _FakeChat:
@@ -278,8 +280,8 @@ class _FakeChat:
 
 
 class _FakeClient:
-    def __init__(self, content=None, exc=None):
-        self.chat = _FakeChat(_FakeCompletions(content=content, exc=exc))
+    def __init__(self, content=None, exc=None, finish_reason="stop"):
+        self.chat = _FakeChat(_FakeCompletions(content=content, exc=exc, finish_reason=finish_reason))
 
 
 def test_review_with_llm_fills_in_rule_fix_and_adds_new_finding(monkeypatch):
@@ -327,6 +329,42 @@ def test_review_with_llm_skips_empty_document(monkeypatch):
     result = review_with_llm(make_page(""), rule_suggestions=rule_suggestions)
     assert result == LLMReviewResult(suggestions=rule_suggestions, revised_document=None)
     assert fake_client.chat.completions.last_kwargs is None
+
+
+def test_review_with_llm_scales_max_tokens_with_document_length(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    monkeypatch.delenv("LLM_MAX_OUTPUT_TOKENS", raising=False)
+    fake_client = _FakeClient(content='{"new_findings": [], "rule_fixes": [], "revised_document": "x"}')
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    long_html = "<p>" + ("가나다라마바사아자차카타파하 " * 500) + "</p>"
+    review_with_llm(make_page(long_html))
+
+    used_max_tokens = fake_client.chat.completions.last_kwargs["max_tokens"]
+    assert used_max_tokens > 4096  # 문서가 길면 기본값보다 커야 함
+
+
+def test_review_with_llm_respects_explicit_max_output_tokens_env(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "777")
+    fake_client = _FakeClient(content='{"new_findings": [], "rule_fixes": [], "revised_document": "x"}')
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    review_with_llm(make_page())
+
+    assert fake_client.chat.completions.last_kwargs["max_tokens"] == 777
+
+
+def test_review_with_llm_raises_clear_error_when_response_truncated(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    fake_client = _FakeClient(content='{"new_findings": [], "rule_fixes"', finish_reason="length")
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    with pytest.raises(LLMReviewError, match="잘렸습니다"):
+        review_with_llm(make_page())
 
 
 def test_system_prompt_excludes_html_only_visible_guidelines():
