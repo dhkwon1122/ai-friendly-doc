@@ -121,7 +121,7 @@ DATABASE_URL=postgresql+psycopg2://<user>:<password>@<host>:5432/<dbname>
    `extra_hosts` 설정), postgres가 호스트의 5432 포트로 노출되어 있다면:
 
    ```
-   DATABASE_URL=postgresql+psycopg2://ai_friendly_doc:change-me@host.docker.internal:5432/ai_friendly_doc
+   DATABASE_URL=postgresql+psycopg2://sait-people:change-me@host.docker.internal:5432/people_user_db
    ```
 
 3. **빌드 & 기동**
@@ -154,8 +154,8 @@ python -c "import secrets; print(secrets.token_hex(32))"                        
 docker compose -f docker-compose.yml -f docker-compose.local-test.yml up -d --build
 ```
 
-이 명령은 postgres 컨테이너(`postgres:16-alpine`, 유저/DB 모두 `ai_friendly_doc`로
-자동 생성됨)와 web 컨테이너를 같이 띄우고, web은 `DATABASE_URL`이
+이 명령은 postgres 컨테이너(`postgres:16-alpine`, 유저 `sait-people` / DB
+`people_user_db`로 자동 생성됨)와 web 컨테이너를 같이 띄우고, web은 `DATABASE_URL`이
 `postgres` 서비스 이름으로 자동 지정되어 접속한다. Windows 브라우저에서
 http://localhost:12345 로 바로 접속해서 테스트하면 된다 (WSL2가 자동으로 포트를
 Windows localhost로 포워딩해준다).

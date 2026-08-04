@@ -17,15 +17,15 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ai_friendly_doc
+      POSTGRES_USER: sait-people
       POSTGRES_PASSWORD: local-test-password
-      POSTGRES_DB: ai_friendly_doc
+      POSTGRES_DB: people_user_db
     ports:
       - "5432:5432"  # Windows에서 DBeaver 등으로 직접 들여다보고 싶을 때만 필요, 없어도 무방
     volumes:
       - ai_friendly_doc_local_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ai_friendly_doc"]
+      test: ["CMD-SHELL", "pg_isready -U sait-people"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -37,7 +37,7 @@ services:
     environment:
       # postgres가 이 서비스와 같은 docker 네트워크에 있으므로 서비스 이름으로 바로 접속한다.
       # .env의 DATABASE_URL(있다면)보다 이 값이 우선 적용된다.
-      DATABASE_URL: postgresql+psycopg2://ai_friendly_doc:local-test-password@postgres:5432/ai_friendly_doc
+      DATABASE_URL: postgresql+psycopg2://sait-people:local-test-password@postgres:5432/people_user_db
 
 volumes:
   ai_friendly_doc_local_pgdata:
