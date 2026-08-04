@@ -26,6 +26,7 @@ class Suggestion:
     location: str  # 사람이 읽을 수 있는 위치 설명 (예: "'설치 방법' 섹션의 표 #2")
     message: str  # 무엇이 문제인지
     suggestion: str  # 어떻게 고치면 좋을지
+    guideline_id: str | None = None  # guidelines.py의 GUIDELINES에 정의된 id (예: "core-6"). 해당 없으면 None
 
 
 class Rule(ABC):
