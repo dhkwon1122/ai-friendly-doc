@@ -11,15 +11,21 @@
 # 종료/삭제:
 #   docker compose -f docker-compose.yml -f docker-compose.local-test.yml down
 #   (데이터까지 지우려면 -v 추가)
+#
+# 유저/비밀번호/DB명은 .env의 LOCAL_TEST_DB_USER / LOCAL_TEST_DB_PASSWORD /
+# LOCAL_TEST_DB_NAME으로 오버라이드할 수 있다 (.env.example 참고). 지정 안 하면
+# 아래 기본값(sait-people / local-test-password / people_user_db)을 쓴다.
+# 이 값들은 테스트용이라도 git에 올라가면 안 되므로 .env(gitignore됨)에만 적어둘 것.
+# 비밀번호에 ':' '@' '/' 같은 URL 특수문자는 쓰지 말 것 (DATABASE_URL 조합 시 깨짐).
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: sait-people
-      POSTGRES_PASSWORD: local-test-password
-      POSTGRES_DB: people_user_db
+      POSTGRES_USER: ${LOCAL_TEST_DB_USER:-sait-people}
+      POSTGRES_PASSWORD: ${LOCAL_TEST_DB_PASSWORD:-local-test-password}
+      POSTGRES_DB: ${LOCAL_TEST_DB_NAME:-people_user_db}
     ports:
       - "5433:5432"  # 호스트 5432가 다른 컨테이너에서 이미 쓰이고 있어 5433으로 노출.
                      # 컨테이너 내부 포트는 그대로 5432라 web -> postgres 통신(같은 docker
@@ -28,7 +34,7 @@ services:
     volumes:
       - ai_friendly_doc_local_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sait-people"]
+      test: ["CMD-SHELL", "pg_isready -U ${LOCAL_TEST_DB_USER:-sait-people}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -40,7 +46,7 @@ services:
     environment:
       # postgres가 이 서비스와 같은 docker 네트워크에 있으므로 서비스 이름으로 바로 접속한다.
       # .env의 DATABASE_URL(있다면)보다 이 값이 우선 적용된다.
-      DATABASE_URL: postgresql+psycopg2://sait-people:local-test-password@postgres:5432/people_user_db
+      DATABASE_URL: postgresql+psycopg2://${LOCAL_TEST_DB_USER:-sait-people}:${LOCAL_TEST_DB_PASSWORD:-local-test-password}@postgres:5432/${LOCAL_TEST_DB_NAME:-people_user_db}
 
 volumes:
   ai_friendly_doc_local_pgdata:

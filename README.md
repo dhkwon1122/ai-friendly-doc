@@ -164,6 +164,11 @@ docker compose -f docker-compose.yml -f docker-compose.local-test.yml up -d --bu
 http://localhost:12345 로 바로 접속해서 테스트하면 된다 (WSL2가 자동으로 포트를
 Windows localhost로 포워딩해준다).
 
+유저/비밀번호/DB명은 하드코딩되어 있지 않고 `.env`의 `LOCAL_TEST_DB_USER` /
+`LOCAL_TEST_DB_PASSWORD` / `LOCAL_TEST_DB_NAME`으로 바꿀 수 있다 (지정 안 하면
+위 기본값 사용, `.env.example` 참고). 테스트 전용 값이라도 git에는 올라가지
+않는 `.env`에서만 관리한다.
+
 종료:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.local-test.yml down
