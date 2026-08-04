@@ -5,6 +5,7 @@ from ai_friendly_doc.llm_review import (
     LLMReviewError,
     LLMReviewResult,
     _apply_rule_fixes,
+    _build_revision_user_content,
     _build_user_content,
     _parse_llm_response,
     _to_suggestions,
@@ -94,22 +95,12 @@ def test_parse_llm_response_code_fenced():
 def test_parse_llm_response_extracts_object_from_surrounding_prose():
     raw = '결과입니다:\n{"new_findings": [], "rule_fixes": []}\n감사합니다.'
     data = _parse_llm_response(raw)
-    assert data == {"new_findings": [], "rule_fixes": [], "revised_document": None}
+    assert data == {"new_findings": [], "rule_fixes": []}
 
 
 def test_parse_llm_response_defaults_missing_keys_to_empty_lists():
     data = _parse_llm_response("{}")
-    assert data == {"new_findings": [], "rule_fixes": [], "revised_document": None}
-
-
-def test_parse_llm_response_extracts_revised_document():
-    data = _parse_llm_response('{"new_findings": [], "rule_fixes": [], "revised_document": "# 수정본"}')
-    assert data["revised_document"] == "# 수정본"
-
-
-def test_parse_llm_response_raises_when_revised_document_not_a_string():
-    with pytest.raises(LLMReviewError):
-        _parse_llm_response('{"new_findings": [], "rule_fixes": [], "revised_document": 123}')
+    assert data == {"new_findings": [], "rule_fixes": []}
 
 
 def test_parse_llm_response_raises_on_garbage():
@@ -219,6 +210,22 @@ def test_build_user_content_omits_findings_section_when_empty():
     assert "구조 검사로 발견된" not in content
 
 
+# ---- _build_revision_user_content -------------------------------------------
+
+
+def test_build_revision_user_content_includes_document_and_suggestions():
+    page = make_page()
+    content = _build_revision_user_content(page, "본문 텍스트", [make_rule_suggestion(location="이미지 #1")])
+    assert "본문 텍스트" in content
+    assert "이미지 #1: 대체 텍스트가 없음 -> alt 텍스트를 추가하세요." in content
+
+
+def test_build_revision_user_content_omits_suggestions_section_when_empty():
+    page = make_page()
+    content = _build_revision_user_content(page, "본문 텍스트", [])
+    assert "반영해야 할 문제" not in content
+
+
 # ---- review_with_llm (네트워크 호출은 모두 모킹) ----------------------------
 
 
@@ -261,17 +268,25 @@ class _FakeResponse:
 
 
 class _FakeCompletions:
-    def __init__(self, content=None, exc=None, finish_reason="stop"):
-        self._content = content
+    """responses는 (content, finish_reason) 튜플의 리스트로, 호출될 때마다 순서대로
+    하나씩 소비된다 (findings 호출 -> revision 호출 순서). 다 쓰면 마지막 걸 반복한다."""
+
+    def __init__(self, responses=None, exc=None):
+        self._responses = responses or [("{}", "stop")]
         self._exc = exc
-        self._finish_reason = finish_reason
-        self.last_kwargs = None
+        self.calls: list[dict] = []
 
     def create(self, **kwargs):
-        self.last_kwargs = kwargs
+        self.calls.append(kwargs)
         if self._exc:
             raise self._exc
-        return _FakeResponse(self._content, finish_reason=self._finish_reason)
+        idx = min(len(self.calls) - 1, len(self._responses) - 1)
+        content, finish_reason = self._responses[idx]
+        return _FakeResponse(content, finish_reason=finish_reason)
+
+    @property
+    def last_kwargs(self):
+        return self.calls[-1] if self.calls else None
 
 
 class _FakeChat:
@@ -280,21 +295,21 @@ class _FakeChat:
 
 
 class _FakeClient:
-    def __init__(self, content=None, exc=None, finish_reason="stop"):
-        self.chat = _FakeChat(_FakeCompletions(content=content, exc=exc, finish_reason=finish_reason))
+    def __init__(self, content=None, responses=None, exc=None, finish_reason="stop"):
+        if responses is None:
+            responses = [(content, finish_reason)] if content is not None else None
+        self.chat = _FakeChat(_FakeCompletions(responses=responses, exc=exc))
 
 
 def test_review_with_llm_fills_in_rule_fix_and_adds_new_finding(monkeypatch):
     monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
     monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
-    fake_client = _FakeClient(
-        content=(
-            '{"new_findings": [{"severity": "warning", "message": "모호한 표현", '
-            '"suggestion": "이것 -> 배포 스크립트", "guideline": "core-1"}], '
-            '"rule_fixes": [{"index": 0, "fix": "alt=\\"배포 아키텍처 다이어그램\\""}], '
-            '"revised_document": "# 수정본 전체"}'
-        )
+    findings_response = (
+        '{"new_findings": [{"severity": "warning", "message": "모호한 표현", '
+        '"suggestion": "이것 -> 배포 스크립트", "guideline": "core-1"}], '
+        '"rule_fixes": [{"index": 0, "fix": "alt=\\"배포 아키텍처 다이어그램\\""}]}'
     )
+    fake_client = _FakeClient(responses=[(findings_response, "stop"), ("# 수정본 전체", "stop")])
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
 
     rule_suggestions = [make_rule_suggestion(suggestion="alt 텍스트를 추가하세요.")]
@@ -306,7 +321,8 @@ def test_review_with_llm_fills_in_rule_fix_and_adds_new_finding(monkeypatch):
     new_finding = next(s for s in result.suggestions if s.rule_id == "llm-review")
     assert new_finding.guideline_id == "core-1"
     assert result.revised_document == "# 수정본 전체"
-    assert fake_client.chat.completions.last_kwargs["model"] == "qwen2.5-32b-instruct"
+    assert len(fake_client.chat.completions.calls) == 2
+    assert all(c["model"] == "qwen2.5-32b-instruct" for c in fake_client.chat.completions.calls)
 
 
 def test_review_with_llm_call_failure_wraps_as_llmreviewerror(monkeypatch):
@@ -331,33 +347,35 @@ def test_review_with_llm_skips_empty_document(monkeypatch):
     assert fake_client.chat.completions.last_kwargs is None
 
 
-def test_review_with_llm_scales_max_tokens_with_document_length(monkeypatch):
+def test_review_with_llm_findings_call_uses_fixed_budget_regardless_of_document_length(monkeypatch):
     monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
     monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
     monkeypatch.delenv("LLM_MAX_OUTPUT_TOKENS", raising=False)
-    fake_client = _FakeClient(content='{"new_findings": [], "rule_fixes": [], "revised_document": "x"}')
+    fake_client = _FakeClient(responses=[('{"new_findings": [], "rule_fixes": []}', "stop"), ("x", "stop")])
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
 
     long_html = "<p>" + ("가나다라마바사아자차카타파하 " * 500) + "</p>"
     review_with_llm(make_page(long_html))
 
-    used_max_tokens = fake_client.chat.completions.last_kwargs["max_tokens"]
-    assert used_max_tokens > 4096  # 문서가 길면 기본값보다 커야 함
+    findings_call, revision_call = fake_client.chat.completions.calls
+    assert findings_call["max_tokens"] == 4096  # 찾기/수정안 호출은 문서 길이와 무관하게 고정 예산
+    assert revision_call["max_tokens"] > 4096  # 수정본 호출은 문서가 길면 늘어남
 
 
-def test_review_with_llm_respects_explicit_max_output_tokens_env(monkeypatch):
+def test_review_with_llm_revision_call_respects_explicit_max_output_tokens_env(monkeypatch):
     monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
     monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
     monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "777")
-    fake_client = _FakeClient(content='{"new_findings": [], "rule_fixes": [], "revised_document": "x"}')
+    fake_client = _FakeClient(responses=[('{"new_findings": [], "rule_fixes": []}', "stop"), ("x", "stop")])
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
 
     review_with_llm(make_page())
 
-    assert fake_client.chat.completions.last_kwargs["max_tokens"] == 777
+    findings_call, revision_call = fake_client.chat.completions.calls
+    assert revision_call["max_tokens"] == 777
 
 
-def test_review_with_llm_raises_clear_error_when_response_truncated(monkeypatch):
+def test_review_with_llm_raises_clear_error_when_findings_response_truncated(monkeypatch):
     monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
     monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
     fake_client = _FakeClient(content='{"new_findings": [], "rule_fixes"', finish_reason="length")
@@ -365,6 +383,50 @@ def test_review_with_llm_raises_clear_error_when_response_truncated(monkeypatch)
 
     with pytest.raises(LLMReviewError, match="잘렸습니다"):
         review_with_llm(make_page())
+
+
+def test_review_with_llm_keeps_suggestions_when_revision_call_truncated(monkeypatch):
+    """수정본(2번째 호출) 생성이 중간에 잘려도, 이미 성공한 findings/fixes(1번째
+    호출) 결과는 잃지 않고 revised_document만 None이어야 한다."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    findings_response = (
+        '{"new_findings": [], "rule_fixes": [{"index": 0, "fix": "alt=\\"배포 아키텍처 다이어그램\\""}]}'
+    )
+    fake_client = _FakeClient(responses=[(findings_response, "stop"), ("잘린 수정본...", "length")])
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    rule_suggestions = [make_rule_suggestion(suggestion="alt 텍스트를 추가하세요.")]
+    result = review_with_llm(make_page("<p>본문</p>"), rule_suggestions=rule_suggestions)
+
+    assert result.suggestions[0].suggestion == 'alt="배포 아키텍처 다이어그램"'
+    assert result.revised_document is None
+
+
+def test_review_with_llm_keeps_suggestions_when_revision_call_raises(monkeypatch):
+    """수정본 호출 자체가 예외를 던져도(연결 오류 등) findings/fixes 결과는 유지돼야 한다."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+
+    call_count = {"n": 0}
+
+    class _FlakyClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    call_count["n"] += 1
+                    if call_count["n"] == 1:
+                        return _FakeResponse('{"new_findings": [], "rule_fixes": []}')
+                    raise ConnectionError("수정본 생성 중 연결 실패")
+
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: _FlakyClient())
+
+    result = review_with_llm(make_page("<p>본문</p>"))
+
+    assert result.suggestions == []
+    assert result.revised_document is None
+    assert call_count["n"] == 2
 
 
 def test_system_prompt_excludes_html_only_visible_guidelines():
