@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 def main() -> None:
     load_dotenv()
     host = os.environ.get("HOST", "127.0.0.1")
-    port = int(os.environ.get("PORT", "8000"))
+    port = int(os.environ.get("PORT", "12345"))
     uvicorn.run("ai_friendly_doc.web.app:app", host=host, port=port, reload=False)
 
 

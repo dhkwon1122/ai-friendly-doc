@@ -65,7 +65,7 @@ ai-friendly-doc-web
 # 또는: python -m ai_friendly_doc.web
 ```
 
-기본적으로 http://127.0.0.1:8000 에서 뜹니다. `HOST`/`PORT` 환경변수로 바인딩을
+기본적으로 http://127.0.0.1:12345 에서 뜹니다. `HOST`/`PORT` 환경변수로 바인딩을
 바꿀 수 있습니다(사내망에 공개하려면 `HOST=0.0.0.0`).
 
 흐름:
@@ -130,7 +130,7 @@ DATABASE_URL=postgresql+psycopg2://<user>:<password>@<host>:5432/<dbname>
    docker compose up -d --build
    ```
 
-   기본적으로 호스트의 8000번 포트로 뜬다 (`docker-compose.yml`의 `ports` 수정 가능).
+   기본적으로 호스트의 12345번 포트로 뜬다 (`docker-compose.yml`의 `ports` 수정 가능).
 
 4. 로그 확인: `docker compose logs -f web`
 
