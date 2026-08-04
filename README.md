@@ -35,7 +35,7 @@ cp .env.example .env
 
 `CONFLUENCE_BASE_URL`은 Cloud 기준 `https://<domain>.atlassian.net/wiki` 형태입니다.
 
-## 사용법
+## 사용법 (CLI)
 
 특정 페이지 ID 분석:
 
@@ -50,6 +50,39 @@ ai-friendly-doc --space-key ENG -o report.md
 ```
 
 `-o`를 생략하면 표준출력으로 리포트가 출력됩니다.
+
+## 웹 UI
+
+여러 사용자가 브라우저에서 로그인해서 각자 자신의 Confluence 토큰으로
+문서를 분석할 수 있는 웹 UI(FastAPI)도 포함되어 있습니다.
+
+```bash
+cp .env.example .env
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"  # FERNET_KEY에 채워넣기
+python -c "import secrets; print(secrets.token_hex(32))"                                    # SESSION_SECRET에 채워넣기
+
+ai-friendly-doc-web
+# 또는: python -m ai_friendly_doc.web
+```
+
+기본적으로 http://127.0.0.1:8000 에서 뜹니다. `HOST`/`PORT` 환경변수로 바인딩을
+바꿀 수 있습니다(사내망에 공개하려면 `HOST=0.0.0.0`).
+
+흐름:
+1. `/register`에서 계정 생성 (아이디 + 비밀번호, bcrypt로 해시 저장)
+2. `/settings`에서 본인의 Confluence Base URL / 인증 방식(Cloud는 basic+이메일,
+   Server·DC는 bearer PAT) / API 토큰 입력 → 토큰은 `FERNET_KEY`로 암호화되어
+   SQLite(`AI_FRIENDLY_DOC_DB`, 기본 `ai_friendly_doc.db`)에 저장
+3. `/analyze`에서 페이지 ID(들) 또는 스페이스 키를 입력해 분석 실행 →
+   결과는 화면에 바로 렌더링되고, "Markdown으로 다운로드" 버튼으로 파일도
+   받을 수 있음. Write API는 여전히 호출하지 않으므로 원본 문서는 변경되지
+   않습니다.
+
+CLI와 마찬가지로 사용자별 토큰은 조회에만 쓰이며, 각 사용자는 본인이 저장한
+토큰으로만 조회가 가능합니다(다른 사용자의 토큰에 접근할 방법 없음).
+
+> 운영 배포 시에는 HTTPS 뒤에 두는 것을 권장합니다(세션 쿠키/토큰 입력이
+> 평문 HTTP로 오가지 않도록).
 
 ## 리포트 예시 구조
 
@@ -101,7 +134,7 @@ pytest
 
 ```
 src/ai_friendly_doc/
-  config.py             # .env 기반 설정 로더
+  config.py             # .env 기반 설정 로더 (CLI용)
   confluence_client.py  # Confluence REST API 읽기 전용 클라이언트
   parser.py             # storage format(XHTML) -> ParsedDoc 변환
   analyzer.py           # 페이지 하나를 파싱 + 규칙 적용
@@ -110,6 +143,12 @@ src/ai_friendly_doc/
   rules/
     base.py             # Rule / Suggestion 기본 클래스
     starter.py           # 스타터 규칙 구현
+  web/
+    app.py               # FastAPI 라우트 (회원가입/로그인/설정/분석)
+    db.py                 # 사용자/Confluence 인증정보 SQLite 저장소
+    security.py           # 비밀번호 해시(bcrypt), 토큰 암호화(Fernet)
+    __main__.py            # `python -m ai_friendly_doc.web` 진입점
+    templates/             # Jinja2 HTML 템플릿
 tests/
   test_rules.py
 ```

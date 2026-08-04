@@ -1,0 +1,236 @@
+"""웹 UI: 사용자가 로그인해서 본인 Confluence 토큰을 저장하고,
+페이지/스페이스를 분석해 개선 제안 리포트를 브라우저에서 바로 확인할 수 있게 한다.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import markdown as md
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
+
+from ..analyzer import analyze_page
+from ..config import ConfluenceConfig
+from ..confluence_client import ConfluenceClient
+from ..report import render_report
+from . import db
+from .security import SecurityConfigError, decrypt_token, encrypt_token, hash_password, verify_password
+
+BASE_DIR = Path(__file__).resolve().parent
+
+app = FastAPI(title="ai-friendly-doc")
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+session_secret = os.environ.get("SESSION_SECRET")
+if not session_secret:
+    raise RuntimeError(
+        "SESSION_SECRET 환경변수가 설정되지 않았습니다. "
+        "무작위 문자열을 생성해 .env에 추가하세요 (예: python -c \"import secrets; print(secrets.token_hex(32))\")"
+    )
+app.add_middleware(SessionMiddleware, secret_key=session_secret, https_only=False)
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    db.init_db()
+
+
+def current_user(request: Request) -> db.User | None:
+    user_id = request.session.get("user_id")
+    if user_id is None:
+        return None
+    return db.get_user_by_id(user_id)
+
+
+def render(request: Request, template: str, **context) -> HTMLResponse:
+    context.setdefault("user", current_user(request))
+    return templates.TemplateResponse(request, template, context)
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    if current_user(request):
+        return RedirectResponse("/analyze", status_code=303)
+    return RedirectResponse("/login", status_code=303)
+
+
+# ---- 인증 ----------------------------------------------------------------
+
+
+@app.get("/register", response_class=HTMLResponse)
+def register_form(request: Request):
+    return render(request, "register.html")
+
+
+@app.post("/register", response_class=HTMLResponse)
+def register_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    username = username.strip()
+    if not username or not password:
+        return render(request, "register.html", error="아이디와 비밀번호를 모두 입력하세요.")
+    if len(password) < 8:
+        return render(request, "register.html", error="비밀번호는 8자 이상이어야 합니다.")
+    if db.get_user_by_username(username):
+        return render(request, "register.html", error="이미 사용 중인 아이디입니다.")
+
+    user = db.create_user(username, hash_password(password))
+    request.session["user_id"] = user.id
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request):
+    return render(request, "login.html")
+
+
+@app.post("/login", response_class=HTMLResponse)
+def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    user = db.get_user_by_username(username.strip())
+    if not user or not verify_password(password, user.password_hash):
+        return render(request, "login.html", error="아이디 또는 비밀번호가 올바르지 않습니다.")
+    request.session["user_id"] = user.id
+    return RedirectResponse("/analyze", status_code=303)
+
+
+@app.post("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
+# ---- Confluence 연동 정보 설정 ---------------------------------------------
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_form(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    creds = db.get_credentials(user.id)
+    return render(request, "settings.html", creds=creds)
+
+
+@app.post("/settings", response_class=HTMLResponse)
+def settings_submit(
+    request: Request,
+    base_url: str = Form(...),
+    auth_type: str = Form(...),
+    email: str = Form(""),
+    api_token: str = Form(""),
+):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    base_url = base_url.strip().rstrip("/")
+    existing = db.get_credentials(user.id)
+
+    if not base_url or auth_type not in ("basic", "bearer"):
+        return render(request, "settings.html", creds=existing, error="필수 값을 확인하세요.")
+    if auth_type == "basic" and not email.strip():
+        return render(request, "settings.html", creds=existing, error="Cloud(basic) 인증은 이메일이 필요합니다.")
+    if not api_token and not existing:
+        return render(request, "settings.html", creds=existing, error="API 토큰을 입력하세요.")
+
+    try:
+        token_to_store = encrypt_token(api_token) if api_token else existing.encrypted_token
+    except SecurityConfigError as e:
+        return render(request, "settings.html", creds=existing, error=str(e))
+
+    db.save_credentials(
+        user_id=user.id,
+        base_url=base_url,
+        auth_type=auth_type,
+        email=email.strip() or None,
+        encrypted_token=token_to_store,
+    )
+    return render(request, "settings.html", creds=db.get_credentials(user.id), saved=True)
+
+
+# ---- 분석 ------------------------------------------------------------------
+
+
+def _build_client(user: db.User) -> ConfluenceClient:
+    creds = db.get_credentials(user.id)
+    if not creds:
+        raise SecurityConfigError("먼저 설정 페이지에서 Confluence 연동 정보를 입력하세요.")
+    config = ConfluenceConfig(
+        base_url=creds.base_url,
+        auth_type=creds.auth_type,
+        email=creds.email,
+        api_token=decrypt_token(creds.encrypted_token),
+    )
+    return ConfluenceClient(config)
+
+
+def _run_analysis(user: db.User, mode: str, value: str):
+    client = _build_client(user)
+    reports = []
+    if mode == "page_ids":
+        page_ids = [p.strip() for p in value.replace(",", "\n").splitlines() if p.strip()]
+        for page_id in page_ids:
+            reports.append(analyze_page(client.get_page(page_id)))
+    else:
+        for page in client.iter_space_pages(value.strip()):
+            reports.append(analyze_page(page))
+    return reports
+
+
+@app.get("/analyze", response_class=HTMLResponse)
+def analyze_form(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    return render(request, "analyze.html")
+
+
+@app.post("/analyze", response_class=HTMLResponse)
+def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(...)):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    try:
+        reports = _run_analysis(user, mode, value)
+    except SecurityConfigError as e:
+        return render(request, "analyze.html", error=str(e), mode=mode, value=value)
+    except Exception as e:  # noqa: BLE001 - 사용자에게 원인 표시
+        return render(request, "analyze.html", error=f"Confluence 조회 중 오류: {e}", mode=mode, value=value)
+
+    if not reports:
+        return render(request, "analyze.html", error="분석할 페이지를 찾지 못했습니다.", mode=mode, value=value)
+
+    report_markdown = render_report(reports)
+    report_html = md.markdown(report_markdown, extensions=["tables"])
+    return render(
+        request,
+        "analyze.html",
+        mode=mode,
+        value=value,
+        report_html=report_html,
+        report_markdown=report_markdown,
+    )
+
+
+@app.post("/analyze/download")
+def analyze_download(request: Request, mode: str = Form(...), value: str = Form(...)):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    try:
+        reports = _run_analysis(user, mode, value)
+    except Exception as e:  # noqa: BLE001 - 다운로드 실패 사유를 그대로 보여줌
+        return PlainTextResponse(f"리포트를 생성하지 못했습니다: {e}", status_code=400)
+
+    report_markdown = render_report(reports)
+    return PlainTextResponse(
+        report_markdown,
+        media_type="text/markdown",
+        headers={"Content-Disposition": 'attachment; filename="ai-friendly-doc-report.md"'},
+    )
