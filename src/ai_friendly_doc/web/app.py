@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..analyzer import analyze_page
-from ..config import ConfluenceConfig
+from ..config import ConfluenceConfig, parse_bool_env
 from ..confluence_client import ConfluenceClient
 from ..report import render_report
 from . import db
@@ -111,6 +111,12 @@ def _fixed_base_url() -> str | None:
     return value or None
 
 
+def _verify_ssl() -> bool:
+    """사내 Confluence가 자체 서명 인증서를 쓰면 .env에 CONFLUENCE_VERIFY_SSL=false로
+    끌 수 있다. base_url과 마찬가지로 서버 전체에 적용되는 배포 단위 설정이다."""
+    return parse_bool_env(os.environ.get("CONFLUENCE_VERIFY_SSL"), default=True)
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_form(request: Request):
     user = current_user(request)
@@ -197,6 +203,7 @@ def _build_client(user: db.User) -> ConfluenceClient:
         auth_type=creds.auth_type,
         email=creds.email,
         api_token=decrypt_token(creds.encrypted_token),
+        verify_ssl=_verify_ssl(),
     )
     return ConfluenceClient(config)
 

@@ -4,12 +4,15 @@ from ai_friendly_doc.config import ConfluenceConfig
 from ai_friendly_doc.confluence_client import ConfluenceClient
 
 
-def make_config(auth_type: str, email: str | None = "someone", api_token: str = "secret") -> ConfluenceConfig:
+def make_config(
+    auth_type: str, email: str | None = "someone", api_token: str = "secret", verify_ssl: bool = True
+) -> ConfluenceConfig:
     return ConfluenceConfig(
         base_url="https://example.atlassian.net/wiki",
         auth_type=auth_type,
         email=email,
         api_token=api_token,
+        verify_ssl=verify_ssl,
     )
 
 
@@ -32,3 +35,13 @@ def test_bearer_auth_sets_authorization_header():
 def test_unsupported_auth_type_raises():
     with pytest.raises(ValueError):
         ConfluenceClient(make_config("digest"))
+
+
+def test_verify_ssl_defaults_to_true():
+    client = ConfluenceClient(make_config("basic"))
+    assert client._session.verify is True
+
+
+def test_verify_ssl_can_be_disabled_for_self_signed_certs():
+    client = ConfluenceClient(make_config("basic", verify_ssl=False))
+    assert client._session.verify is False
