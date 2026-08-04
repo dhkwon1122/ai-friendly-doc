@@ -23,14 +23,18 @@ def analyze_page(page: ConfluencePage, rules: list[Rule] | None = None) -> PageR
     doc = parse_storage_html(page.title, page.storage_html)
     llm_configured = is_llm_configured()
 
-    suggestions: list[Suggestion] = []
+    rule_suggestions: list[Suggestion] = []
     for rule in active_rules:
-        suggestions.extend(rule.check(doc))
+        rule_suggestions.extend(rule.check(doc))
 
+    # LLM이 설정돼 있으면, 규칙이 찾은 문제들도 LLM에게 같이 넘겨서 각각에 대한
+    # 구체적인(복사-붙여넣기 가능한) 수정안을 채우게 한다. 실패하면 규칙
+    # 기반 결과(조언 형태의 suggestion)는 그대로 살리고 실패 사실만 추가한다.
+    suggestions: list[Suggestion] = list(rule_suggestions)
     llm_succeeded = False
     if llm_configured:
         try:
-            suggestions.extend(review_with_llm(page))
+            suggestions = review_with_llm(page, rule_suggestions=rule_suggestions)
             llm_succeeded = True
         except LLMReviewError as e:
             suggestions.append(
