@@ -30,8 +30,12 @@ cp .env.example .env
 - **Confluence Cloud**: `CONFLUENCE_AUTH_TYPE=basic` + `CONFLUENCE_EMAIL` +
   Atlassian API 토큰(`CONFLUENCE_API_TOKEN`).
   토큰 발급: https://id.atlassian.com/manage-profile/security/api-tokens
-- **Confluence Server/Data Center**: `CONFLUENCE_AUTH_TYPE=bearer` +
+- **Confluence Server/Data Center (PAT 사용 가능한 경우)**: `CONFLUENCE_AUTH_TYPE=bearer` +
   Personal Access Token(`CONFLUENCE_API_TOKEN`).
+- **Confluence Server/Data Center (PAT 발급이 안 되거나 안 쓰는 경우)**:
+  `CONFLUENCE_AUTH_TYPE=userpass` + 계정 ID(`CONFLUENCE_EMAIL`) + 비밀번호(`CONFLUENCE_API_TOKEN`).
+  내부적으로 basic과 동일하게 HTTP Basic Auth로 전송되며, 계정 ID는 이메일 형식이
+  아니어도 된다.
 
 `CONFLUENCE_BASE_URL`은 Cloud 기준 `https://<domain>.atlassian.net/wiki` 형태입니다.
 
@@ -71,7 +75,7 @@ ai-friendly-doc-web
 흐름:
 1. `/register`에서 계정 생성 (아이디 + 비밀번호, bcrypt로 해시 저장)
 2. `/settings`에서 본인의 Confluence Base URL / 인증 방식(Cloud는 basic+이메일,
-   Server·DC는 bearer PAT) / API 토큰 입력 → 토큰은 `FERNET_KEY`로 암호화되어
+   Server·DC는 bearer+PAT 또는 userpass+계정 ID/비밀번호) / API 토큰(또는 비밀번호) 입력 → 값은 `FERNET_KEY`로 암호화되어
    DB에 저장
 3. `/analyze`에서 페이지 ID(들) 또는 스페이스 키를 입력해 분석 실행 →
    결과는 화면에 바로 렌더링되고, "Markdown으로 다운로드" 버튼으로 파일도

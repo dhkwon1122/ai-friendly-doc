@@ -28,7 +28,9 @@ class ConfluenceClient:
     def __init__(self, config: ConfluenceConfig, session: requests.Session | None = None):
         self._config = config
         self._session = session or requests.Session()
-        if config.auth_type == "basic":
+        if config.auth_type in ("basic", "userpass"):
+            # basic: Cloud (이메일 + API 토큰), userpass: Server/DC (계정 ID + 비밀번호)
+            # 둘 다 HTTP Basic Auth로 (email, api_token) 튜플을 보내는 것은 동일함.
             self._session.auth = (config.email, config.api_token)
         elif config.auth_type == "bearer":
             self._session.headers["Authorization"] = f"Bearer {config.api_token}"
