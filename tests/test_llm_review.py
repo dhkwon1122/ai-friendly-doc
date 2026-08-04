@@ -112,6 +112,34 @@ def test_to_suggestions_skips_non_dict_items():
     assert _to_suggestions(["오류", 123]) == []
 
 
+def test_to_suggestions_keeps_valid_guideline_id():
+    suggestions = _to_suggestions([{"severity": "warning", "guideline": "core-1"}])
+    assert suggestions[0].guideline_id == "core-1"
+
+
+def test_to_suggestions_drops_unknown_guideline_id():
+    suggestions = _to_suggestions([{"severity": "warning", "guideline": "other"}])
+    assert suggestions[0].guideline_id is None
+
+
+def test_to_suggestions_guideline_missing_defaults_to_none():
+    suggestions = _to_suggestions([{"severity": "warning"}])
+    assert suggestions[0].guideline_id is None
+
+
+def test_system_prompt_excludes_html_only_visible_guidelines():
+    from ai_friendly_doc.llm_review import SYSTEM_PROMPT
+
+    # 원본 HTML(colspan/매크로/스타일 태그)에만 있는 정보라 평문 프롬프트로는
+    # LLM이 판단할 수 없는 가이드라인은 체크리스트에서 빠져 있어야 한다.
+    assert "extra-2" not in SYSTEM_PROMPT
+    assert "extra-3" not in SYSTEM_PROMPT
+    assert "extra-7" not in SYSTEM_PROMPT
+    # 핵심 가이드라인 7개는 전부 LLM이 판단 가능하므로 프롬프트에 포함돼야 한다.
+    for i in range(1, 8):
+        assert f"core-{i}" in SYSTEM_PROMPT
+
+
 # ---- review_with_llm (네트워크 호출은 모두 모킹) ----------------------------
 
 

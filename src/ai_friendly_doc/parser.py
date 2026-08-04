@@ -23,6 +23,8 @@ class TableInfo:
     row_count: int
     col_count: int
     preceding_heading: str | None
+    has_merged_cells: bool = False
+    has_nested_table: bool = False
 
 
 @dataclass
@@ -58,6 +60,7 @@ class ParsedDoc:
     images: list[ImageInfo] = field(default_factory=list)
     links: list[LinkInfo] = field(default_factory=list)
     paragraphs: list[ParagraphInfo] = field(default_factory=list)
+    macro_count: int = 0  # 문서에 등장하는 ac:structured-macro(로드맵/결정 매트릭스 등) 총 개수
 
 
 def _has_ancestor(el: Tag, *names: str) -> bool:
@@ -103,6 +106,11 @@ def parse_storage_html(title: str, storage_html: str) -> ParsedDoc:
             col_count = 0
             if rows:
                 col_count = len(rows[0].find_all(["th", "td"]))
+            has_merged_cells = any(
+                cell.get("colspan") not in (None, "1") or cell.get("rowspan") not in (None, "1")
+                for cell in el.find_all(["td", "th"])
+            )
+            has_nested_table = el.find("table") is not None
             doc.tables.append(
                 TableInfo(
                     index=table_idx,
@@ -110,9 +118,15 @@ def parse_storage_html(title: str, storage_html: str) -> ParsedDoc:
                     row_count=len(rows),
                     col_count=col_count,
                     preceding_heading=current_heading,
+                    has_merged_cells=has_merged_cells,
+                    has_nested_table=has_nested_table,
                 )
             )
             table_idx += 1
+            continue
+
+        if name == "ac:structured-macro":
+            doc.macro_count += 1
             continue
 
         if name in ("ac:image", "img"):

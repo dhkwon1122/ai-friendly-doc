@@ -188,17 +188,74 @@ docker compose -f docker-compose.yml -f docker-compose.local-test.yml down
 자동 병합되는데, 서버에서 무심코 그렇게 실행하면 이 테스트용 postgres가 같이
 떠버릴 수 있어서). 항상 `-f docker-compose.local-test.yml`을 명시할 때만 적용된다.
 
+## AI-Friendly 문서 작성 가이드라인
+
+사내에서 정한, AI가 이해하기 좋은 문서를 쓰기 위한 가이드라인입니다. **핵심
+가이드라인 7개**는 이 도구의 점수 산정 기준이 되고, **추가 권장 가이드 7개**는
+리포트에 제안으로는 나오지만 점수에는 반영되지 않습니다.
+
+각 가이드라인은 규칙 엔진(결정론적 코드 체크)이나 LLM 심층 검토(내용 기반
+판단) 중 하나 이상으로 확인됩니다. "LLM 전용"으로 표시된 항목은 `.env`에
+`LLM_BASE_URL`을 설정해야만 확인할 수 있고, 설정 안 돼 있으면 리포트에
+"확인 불가"로 표시됩니다 (위반으로 간주하지 않음).
+
+### 핵심 가이드라인
+
+| ID | 가이드라인 | 확인 방법 |
+| --- | --- | --- |
+| `core-1` | 대명사 사용 자제 및 주어 포함 | LLM 전용 (구조적으로는 `ambiguous-link-text` 규칙이 링크 텍스트의 모호한 지시어만 부분적으로 잡음) |
+| `core-2` | 이미지/표 설명 표기 | 규칙: `missing-alt-text`, `missing-table-header` |
+| `core-3` | 원본/참조 문서 경로 표기 | LLM 전용 |
+| `core-4` | 사용 용어 통일 | LLM 전용 |
+| `core-5` | 전문 용어 별도 정리 | LLM 전용 |
+| `core-6` | 상대적 시간 표현 대신 절대 날짜 명시 | 규칙: `relative-time-expression` (+ LLM 보완) |
+| `core-7` | 문서의 자체 완결성 (참조 문서 없이도 핵심 맥락 파악 가능) | LLM 전용 |
+
+### 추가 권장 가이드
+
+| ID | 가이드라인 | 확인 방법 |
+| --- | --- | --- |
+| `extra-1` | 서론/본론/결론 흐름으로 작성 | LLM 전용 |
+| `extra-2` | 셀 병합/표 중첩 지양 | 규칙: `merged-or-nested-table` |
+| `extra-3` | 스타일 기능 사용 (일반 텍스트로 제목/강조 흉내내지 않기) | LLM 전용 (다만 LLM에 전달하는 평문에는 스타일 정보가 빠져 있어 실제로는 판단하지 않음 - 향후 개선 여지) |
+| `extra-4` | 주제가 바뀔 때 섹션 분리 | 규칙: `heading-hierarchy-skip`, `missing-h1` |
+| `extra-5` | 제목만 봐도 내용 파악 가능하게 작성 | 규칙: `vague-heading` (+ LLM 보완) |
+| `extra-6` | 절차성 내용은 번호 리스트로 작성 | 규칙: `pseudo-numbered-list` (+ LLM 보완) |
+| `extra-7` | 과도한 매크로/위젯보다 기본 텍스트·표 구조 우선 | 규칙: `excessive-macros` |
+
+## 핵심 가이드라인 점수화
+
+페이지마다 핵심 가이드라인 7개 중 몇 개를 준수했는지로 점수(0~100점)를 매깁니다.
+
+- **준수**: 해당 가이드라인을 확인할 방법(규칙 또는 LLM)이 있었고, 위반이 발견되지 않음
+- **위반**: 규칙 또는 LLM이 위반 사례를 찾음
+- **확인 불가**: LLM 전용 가이드라인인데 `LLM_BASE_URL`이 없거나 이번 분석에서 LLM 호출이 실패한 경우 - 점수 계산에서 제외됨 (위반으로 치지 않음)
+
+점수 = `100 * 준수 개수 / 확인 가능 개수` (반올림). 확인 가능한 항목이 하나도
+없으면(예: 규칙 위반도 없고 LLM도 꺼져 있어서 7개 다 확인 불가) 점수는 계산하지
+않고 `-`로 표시합니다.
+
 ## 리포트 예시 구조
 
 ```
 # AI-Friendly 문서 개선 제안 리포트
 
-| 페이지 | 제안 수 | 심각 | 경고 | 참고 |
-| --- | --- | --- | --- | --- |
-| 배포 가이드 | 3 | 0 | 2 | 1 |
+| 페이지 | 제안 수 | 심각 | 경고 | 참고 | 핵심 가이드 점수 |
+| --- | --- | --- | --- | --- | --- |
+| 배포 가이드 | 3 | 0 | 2 | 1 | 86점 |
 
 ## 배포 가이드
 - 원본: https://your-domain.atlassian.net/wiki/spaces/ENG/pages/123456
+...
+
+**핵심 가이드라인 준수**
+
+점수: **86점** (6/7개 항목 준수)
+
+| 가이드라인 | 상태 |
+| --- | --- |
+| 대명사 사용 자제 및 주어 포함 | ⚠️ 위반 |
+| 이미지/표 설명 표기 | ✅ 준수 |
 ...
 
 ### [🟡 경고] '사전 준비' 섹션의 표 #1 (4행 x 3열)
@@ -209,33 +266,36 @@ docker compose -f docker-compose.yml -f docker-compose.local-test.yml down
 
 ## 포함된 스타터 규칙
 
-| 규칙 ID | 설명 |
-| --- | --- |
-| `heading-hierarchy-skip` | 제목 레벨이 갑자기 건너뛰는 경우 (H1 → H3 등) |
-| `missing-h1` | 문서에 최상위 제목(H1)이 없는 경우 |
-| `missing-table-header` | 헤더 행이 없는 표 |
-| `missing-alt-text` | 대체 텍스트가 없는 이미지 |
-| `ambiguous-link-text` | "여기", "click here" 등 맥락 없이 이해 불가능한 링크 텍스트 |
-| `long-paragraph` | 지나치게 긴 문단 (기본 120단어 초과) |
+| 규칙 ID | 설명 | 가이드라인 |
+| --- | --- | --- |
+| `heading-hierarchy-skip` | 제목 레벨이 갑자기 건너뛰는 경우 (H1 → H3 등) | `extra-4` |
+| `missing-h1` | 문서에 최상위 제목(H1)이 없는 경우 | `extra-4` |
+| `missing-table-header` | 헤더 행이 없는 표 | `core-2` |
+| `missing-alt-text` | 대체 텍스트가 없는 이미지 | `core-2` |
+| `ambiguous-link-text` | "여기", "click here" 등 맥락 없이 이해 불가능한 링크 텍스트 | `core-1` |
+| `long-paragraph` | 지나치게 긴 문단 (기본 120단어 초과) | - |
+| `relative-time-expression` | "최근에", "지난주" 등 상대적 시간 표현 | `core-6` |
+| `merged-or-nested-table` | 셀 병합(colspan/rowspan)이나 표 중첩 | `extra-2` |
+| `vague-heading` | "설정", "기타" 등 내용을 짐작하기 어려운 제목 | `extra-5` |
+| `pseudo-numbered-list` | 리스트 대신 문단 안에 번호만 나열한 절차 | `extra-6` |
+| `excessive-macros` | 과도하게 많은 Confluence 매크로 사용 (기본 8개 초과) | `extra-7` |
 
 ## LLM 심층 검토 (선택)
 
-스타터 규칙은 구조적인 문제(제목 계층, 표 헤더, alt 텍스트 등)만 잡습니다.
-`.env`에 `LLM_BASE_URL`을 설정하면, 실제 문서 내용을 LLM에게 읽혀서 "AI가 이
-문서만 보고 정확히 이해할 수 있는가" 관점의 문제까지 같이 찾아줍니다:
-
-- 문맥 없이는 무엇을 가리키는지 알 수 없는 지시어("이것", "위 내용" 등)
-- 설명 없이 쓰인 사내 용어/줄임말/프로젝트 코드명
-- 이 문서만 봐서는 알 수 없는, 생략된 전제나 배경 설명
-- 결론이나 의도가 불명확한 문단
-- 시간이 지나면 틀리게 되는 상대적 표현("최근에", "지난주")
+규칙 엔진은 결정론적으로 판별 가능한 항목만 잡습니다. `.env`에
+`LLM_BASE_URL`을 설정하면, 실제 문서 내용을 LLM에게 읽혀서 위 가이드라인 중
+"LLM 전용"으로 표시된 항목들(대명사/주어 생략, 참조 문서 경로, 용어 통일,
+전문 용어 정리, 문서 자체 완결성, 서론/본론/결론 흐름 등)을 확인합니다. LLM은
+각 지적 사항에 관련 가이드라인 ID를 함께 답하도록 프롬프트되어 있고, 이 값이
+점수 계산에도 그대로 쓰입니다.
 
 vLLM 등 OpenAI 호환 API 엔드포인트를 그대로 쓸 수 있습니다 (`.env.example`의
 LLM 관련 항목 참고). 설정돼 있으면 CLI/웹 UI 모두에서 매 분석마다 자동으로
 같이 실행되며, 별도로 켜고 끄는 옵션은 없습니다. LLM 호출이 실패해도 규칙
 기반 결과는 그대로 리포트에 남고, 실패 사실만 별도 항목(`llm-review-error`)
-으로 표시됩니다. 결과는 규칙 기반 제안과 같은 리포트에 `llm-review`
-규칙 ID로 섞여서 나타납니다.
+으로 표시됩니다 (이 경우 LLM 전용 가이드라인들은 점수에서 "확인 불가"로
+처리됩니다). 결과는 규칙 기반 제안과 같은 리포트에 `llm-review` 규칙 ID로
+섞여서 나타납니다.
 
 ## 새 규칙 추가하기
 
@@ -257,7 +317,8 @@ src/ai_friendly_doc/
   config.py             # .env 기반 설정 로더 (CLI용)
   confluence_client.py  # Confluence REST API 읽기 전용 클라이언트
   parser.py             # storage format(XHTML) -> ParsedDoc 변환
-  analyzer.py           # 페이지 하나를 파싱 + 규칙(+ 설정 시 LLM) 적용
+  guidelines.py         # 14개 AI-friendly 가이드라인 정의 + 핵심 가이드라인 점수화
+  analyzer.py           # 페이지 하나를 파싱 + 규칙(+ 설정 시 LLM) 적용 + 점수 계산
   llm_review.py         # LLM(vLLM 등 OpenAI 호환 API) 기반 심층 검토
   report.py             # 제안 목록 -> Markdown 리포트
   cli.py                # CLI 진입점
@@ -272,6 +333,8 @@ src/ai_friendly_doc/
     templates/             # Jinja2 HTML 템플릿
 tests/
   test_rules.py
+  test_parser.py
+  test_guidelines.py
   test_confluence_client.py
   test_config.py
   test_fixed_base_url.py
