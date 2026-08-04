@@ -31,3 +31,6 @@ ai-friendly-doc-web = "ai_friendly_doc.web.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"ai_friendly_doc.web" = ["templates/*.html"]
