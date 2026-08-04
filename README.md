@@ -137,6 +137,40 @@ DATABASE_URL=postgresql+psycopg2://<user>:<password>@<host>:5432/<dbname>
 vLLM은 현재 이 앱에서 사용하지 않지만(향후 LLM 기반 재작성 제안에 쓸 수 있음),
 같은 호스트-포트 노출 방식으로 나중에 연결할 수 있다.
 
+### 서버에 올리기 전, Windows/WSL에서 로컬 테스트
+
+서버는 postgres가 이미 docker로 떠 있어서 위 방식(호스트 포트로 접속)을 쓰지만,
+로컬 PC에서는 그렇게 맞출 필요 없이 `docker-compose.local-test.yml`로 테스트 전용
+postgres 컨테이너를 앱과 같은 docker 네트워크에 띄워서 쓰는 게 훨씬 간단하다
+(Windows에 설치된 postgres를 WSL에서 접속하려면 리스닝 주소/방화벽/백신 설정을
+일일이 맞춰야 해서 번거롭다).
+
+```bash
+cp .env.example .env
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"  # FERNET_KEY
+python -c "import secrets; print(secrets.token_hex(32))"                                    # SESSION_SECRET
+# DATABASE_URL은 채우지 않아도 됨 (아래 오버레이가 자동으로 지정함)
+
+docker compose -f docker-compose.yml -f docker-compose.local-test.yml up -d --build
+```
+
+이 명령은 postgres 컨테이너(`postgres:16-alpine`, 유저/DB 모두 `ai_friendly_doc`로
+자동 생성됨)와 web 컨테이너를 같이 띄우고, web은 `DATABASE_URL`이
+`postgres` 서비스 이름으로 자동 지정되어 접속한다. Windows 브라우저에서
+http://localhost:12345 로 바로 접속해서 테스트하면 된다 (WSL2가 자동으로 포트를
+Windows localhost로 포워딩해준다).
+
+종료:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local-test.yml down
+# DB 데이터까지 지우려면: ... down -v
+```
+
+`docker-compose.local-test.yml`은 로컬 테스트 전용이며, 파일명을 일부러
+`docker-compose.override.yml`로 하지 않았다(그 이름은 `docker compose up`에서
+자동 병합되는데, 서버에서 무심코 그렇게 실행하면 이 테스트용 postgres가 같이
+떠버릴 수 있어서). 항상 `-f docker-compose.local-test.yml`을 명시할 때만 적용된다.
+
 ## 리포트 예시 구조
 
 ```
@@ -205,6 +239,7 @@ src/ai_friendly_doc/
 tests/
   test_rules.py
 Dockerfile
-docker-compose.yml
+docker-compose.yml               # 서버 배포용 (호스트 노출 포트의 기존 postgres에 접속)
+docker-compose.local-test.yml    # Windows/WSL 로컬 테스트용 오버레이 (postgres 컨테이너 포함)
 scripts/init_postgres.sql   # 서버 postgres에 앱 전용 DB/유저 생성
 ```

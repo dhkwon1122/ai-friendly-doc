@@ -1,0 +1,43 @@
+# 로컬(Windows/WSL) 테스트 전용 오버레이. 서버 배포용 docker-compose.yml은 건드리지 않고,
+# 여기에만 테스트용 postgres 컨테이너와 그걸 가리키는 DATABASE_URL을 추가한다.
+#
+# 일부러 docker-compose.override.yml이라는 이름을 쓰지 않았다. 그 이름은 `docker compose up`
+# 실행 시 자동으로 병합되는데, 그러면 서버에서 무심코 `docker compose up`을 돌렸을 때
+# 이 테스트용 postgres가 같이 떠버릴 수 있다. -f로 명시할 때만 적용되게 한다.
+#
+# 사용법:
+#   docker compose -f docker-compose.yml -f docker-compose.local-test.yml up -d --build
+#
+# 종료/삭제:
+#   docker compose -f docker-compose.yml -f docker-compose.local-test.yml down
+#   (데이터까지 지우려면 -v 추가)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ai_friendly_doc
+      POSTGRES_PASSWORD: local-test-password
+      POSTGRES_DB: ai_friendly_doc
+    ports:
+      - "5432:5432"  # Windows에서 DBeaver 등으로 직접 들여다보고 싶을 때만 필요, 없어도 무방
+    volumes:
+      - ai_friendly_doc_local_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_friendly_doc"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # postgres가 이 서비스와 같은 docker 네트워크에 있으므로 서비스 이름으로 바로 접속한다.
+      # .env의 DATABASE_URL(있다면)보다 이 값이 우선 적용된다.
+      DATABASE_URL: postgresql+psycopg2://ai_friendly_doc:local-test-password@postgres:5432/ai_friendly_doc
+
+volumes:
+  ai_friendly_doc_local_pgdata:
