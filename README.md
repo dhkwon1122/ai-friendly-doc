@@ -218,15 +218,31 @@ docker compose -f docker-compose.yml -f docker-compose.local-test.yml down
 | `ambiguous-link-text` | "여기", "click here" 등 맥락 없이 이해 불가능한 링크 텍스트 |
 | `long-paragraph` | 지나치게 긴 문단 (기본 120단어 초과) |
 
+## LLM 심층 검토 (선택)
+
+스타터 규칙은 구조적인 문제(제목 계층, 표 헤더, alt 텍스트 등)만 잡습니다.
+`.env`에 `LLM_BASE_URL`을 설정하면, 실제 문서 내용을 LLM에게 읽혀서 "AI가 이
+문서만 보고 정확히 이해할 수 있는가" 관점의 문제까지 같이 찾아줍니다:
+
+- 문맥 없이는 무엇을 가리키는지 알 수 없는 지시어("이것", "위 내용" 등)
+- 설명 없이 쓰인 사내 용어/줄임말/프로젝트 코드명
+- 이 문서만 봐서는 알 수 없는, 생략된 전제나 배경 설명
+- 결론이나 의도가 불명확한 문단
+- 시간이 지나면 틀리게 되는 상대적 표현("최근에", "지난주")
+
+vLLM 등 OpenAI 호환 API 엔드포인트를 그대로 쓸 수 있습니다 (`.env.example`의
+LLM 관련 항목 참고). 설정돼 있으면 CLI/웹 UI 모두에서 매 분석마다 자동으로
+같이 실행되며, 별도로 켜고 끄는 옵션은 없습니다. LLM 호출이 실패해도 규칙
+기반 결과는 그대로 리포트에 남고, 실패 사실만 별도 항목(`llm-review-error`)
+으로 표시됩니다. 결과는 규칙 기반 제안과 같은 리포트에 `llm-review`
+규칙 ID로 섞여서 나타납니다.
+
 ## 새 규칙 추가하기
 
 `src/ai_friendly_doc/rules/base.py`의 `Rule`을 상속해 `check(doc: ParsedDoc)`을
 구현하고, `src/ai_friendly_doc/rules/__init__.py`의 `DEFAULT_RULES`에 등록하면
 됩니다. `ParsedDoc`은 문서의 제목/표/이미지/링크/문단을 순서대로 담고 있습니다
 (`src/ai_friendly_doc/parser.py` 참고).
-
-내용 자체를 다루는 규칙(모호한 표현 감지, 사내 은어 풀이, LLM 재작성 제안 등)은
-아직 정리 중이며, 규칙이 확정되는 대로 이 스타터 세트에 추가할 예정입니다.
 
 ## 테스트
 
@@ -241,7 +257,8 @@ src/ai_friendly_doc/
   config.py             # .env 기반 설정 로더 (CLI용)
   confluence_client.py  # Confluence REST API 읽기 전용 클라이언트
   parser.py             # storage format(XHTML) -> ParsedDoc 변환
-  analyzer.py           # 페이지 하나를 파싱 + 규칙 적용
+  analyzer.py           # 페이지 하나를 파싱 + 규칙(+ 설정 시 LLM) 적용
+  llm_review.py         # LLM(vLLM 등 OpenAI 호환 API) 기반 심층 검토
   report.py             # 제안 목록 -> Markdown 리포트
   cli.py                # CLI 진입점
   rules/
@@ -255,6 +272,11 @@ src/ai_friendly_doc/
     templates/             # Jinja2 HTML 템플릿
 tests/
   test_rules.py
+  test_confluence_client.py
+  test_config.py
+  test_fixed_base_url.py
+  test_llm_review.py
+  test_analyzer_llm_integration.py
 Dockerfile
 docker-compose.yml               # 서버 배포용 (호스트 노출 포트의 기존 postgres에 접속)
 docker-compose.local-test.yml    # Windows/WSL 로컬 테스트용 오버레이 (postgres 컨테이너 포함)
