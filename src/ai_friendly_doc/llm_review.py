@@ -1,7 +1,7 @@
 """LLM(사내 vLLM 등 OpenAI 호환 API)을 이용한 심층 문서 검토.
 
 규칙 엔진(rules/)이 구조적인 문제(제목 계층, 표 헤더, alt 텍스트 등)를
-잡는다면, 이 모듈은 실제 내용을 LLM에게 읽혀서 세 가지를 한다:
+잡는다면, 이 모듈은 실제 내용을 LLM에게 읽혀서 다음을 한다:
 
 1. 규칙 엔진이 잡지 못하는 문제(모호한 지시어, 설명 없는 사내 용어, 생략된
    전제, 불명확한 결론 등)를 새로 찾는다.
@@ -11,6 +11,13 @@
    하는지는 모르고, LLM은 문서 내용을 읽었으니 채울 수 있다.)
 3. 위 1, 2번을 모두 반영한, 문서 전체의 수정본(revised_document)을 만든다.
    웹 UI에서 원본과 나란히 보여주는 데 쓴다.
+
+1·2번과 3번은 별도의 LLM 호출로 나뉘어 있다. 3번(전체 문서 재작성)은
+출력이 길어서 자기 완결적인(self-hosted) 소형 모델일수록 중간에 잘리거나
+망가지기 쉬운데, 한 호출에 다 묶으면 3번이 실패할 때마다 이미 성공한
+1·2번 결과까지 통째로 날아간다. 그래서 3번은 별도 호출로 분리해 최선을
+다해 시도하되(best-effort), 실패해도 1·2번 결과(suggestions)는 그대로
+살리고 revised_document만 None으로 둔다.
 
 LLM_BASE_URL이 설정된 경우에만 동작하며, analyzer.analyze_page()가
 설정 여부를 보고 자동으로 호출한다.
@@ -31,7 +38,7 @@ from .rules import Severity, Suggestion
 
 DEFAULT_MAX_INPUT_CHARS = 12000
 DEFAULT_TIMEOUT_SECONDS = 60.0
-DEFAULT_MAX_OUTPUT_TOKENS = 4096  # 최소값. 실제로는 입력 길이에 비례해 늘어남 (review_with_llm 참고)
+DEFAULT_MAX_OUTPUT_TOKENS = 4096  # 찾기/수정안(1번 호출)용 고정 예산. 수정본(2번 호출)은 문서 길이에 비례해 별도 계산됨
 
 _HEADING_LEVELS = {f"h{i}": i for i in range(1, 7)}
 
@@ -59,7 +66,7 @@ SYSTEM_PROMPT = f"""\
 {_guideline_checklist()}
 
 사용자 메시지에는 문서 본문이 주어지고, 이미 구조 검사(규칙 엔진)로 발견된
-문제 목록이 번호와 함께 같이 주어질 수 있습니다. 다음 세 가지를 모두
+문제 목록이 번호와 함께 같이 주어질 수 있습니다. 다음 두 가지를 모두
 수행하세요:
 
 1. **새 문제 찾기**: 위 가이드라인 관점에서, 아직 목록에 없는 문제를 새로
@@ -72,10 +79,6 @@ SYSTEM_PROMPT = f"""\
    확실히 알 수 없는 부분(예: 이미지의 실제 내용, 정확한 날짜)은 문서 안의
    단서로 최선을 다해 추정하고, 추정이라는 것을 짧게 표시하세요
    (예: "(파일명 기준 추정, 확인 필요)").
-3. **문서 전체 수정본 작성**: 위 1, 2번에서 만든 새 발견 사항과 수정안을
-   모두 반영해서, 문서 처음부터 끝까지 완전히 다시 쓴 수정본을 만드세요.
-   원본과 같은 평문 형식(제목은 #/##/###, 표는 | a | b |, 목록은 -)을
-   유지하고, 문제가 없던 부분은 그대로 두세요.
 
 새로 찾은 문제는 다음 필드를 가진 객체로 만드세요. "suggestion"은 조언이
 아니라 실제로 붙여넣을 수 있는 구체적인 문구/문장이어야 합니다:
@@ -91,10 +94,23 @@ SYSTEM_PROMPT = f"""\
 
 다음 JSON 객체 형식으로만 답하세요. 다른 설명이나 코드펜스 없이 이 객체만
 출력합니다:
-{{"new_findings": [...], "rule_fixes": [...], "revised_document": "문서 전체 수정본"}}
+{{"new_findings": [...], "rule_fixes": [...]}}
 
-찾은 문제나 만들 수정안이 없으면 해당 배열을 빈 배열로 두되, revised_document는
-항상 채우세요 (고칠 게 없으면 원본과 같은 내용을 그대로 넣으면 됩니다).
+찾은 문제나 만들 수정안이 없으면 해당 배열을 빈 배열로 두면 됩니다.
+"""
+
+REVISION_SYSTEM_PROMPT = """\
+당신은 사내 Confluence 문서를 AI-friendly 가이드라인에 맞게 고쳐 쓰는
+편집자입니다. 사용자 메시지에는 원본 문서 전체와, 반영해야 할 문제/수정안
+목록이 함께 주어집니다.
+
+다음 규칙을 지켜 문서 전체를 처음부터 끝까지 다시 쓰세요:
+- 목록에 있는 문제와 수정안을 모두 반영합니다.
+- 목록에 없는, 문제가 없던 부분은 그대로 유지합니다 (불필요하게 다시
+  쓰지 않습니다).
+- 원본과 같은 평문 형식(제목은 #/##/###, 표는 | a | b |, 목록은 -)을
+  유지합니다.
+- 다른 설명, 인사말, 코드펜스 없이 수정된 문서 본문만 그대로 출력하세요.
 """
 
 
@@ -189,8 +205,7 @@ def _strip_code_fence(text: str) -> str:
 
 
 def _parse_llm_response(raw: str) -> dict:
-    """{"new_findings": [...], "rule_fixes": [...], "revised_document": "..."} 형태의
-    JSON 객체를 파싱한다."""
+    """{"new_findings": [...], "rule_fixes": [...]} 형태의 JSON 객체를 파싱한다."""
     text = _strip_code_fence(raw)
 
     try:
@@ -212,11 +227,7 @@ def _parse_llm_response(raw: str) -> dict:
     if not isinstance(new_findings, list) or not isinstance(rule_fixes, list):
         raise LLMReviewError("LLM 응답의 new_findings/rule_fixes가 배열 형식이 아닙니다.")
 
-    revised_document = data.get("revised_document")
-    if revised_document is not None and not isinstance(revised_document, str):
-        raise LLMReviewError("LLM 응답의 revised_document가 문자열 형식이 아닙니다.")
-
-    return {"new_findings": new_findings, "rule_fixes": rule_fixes, "revised_document": revised_document}
+    return {"new_findings": new_findings, "rule_fixes": rule_fixes}
 
 
 def _to_suggestions(items: list[dict]) -> list[Suggestion]:
@@ -276,6 +287,63 @@ def _build_user_content(page: ConfluencePage, text: str, rule_suggestions: list[
     return "\n".join(parts)
 
 
+def _build_revision_user_content(page: ConfluencePage, text: str, suggestions: list[Suggestion]) -> str:
+    parts = [f"문서 제목: {page.title}", "", "원본 문서:", text]
+    if suggestions:
+        parts.append("")
+        parts.append("---")
+        parts.append("반영해야 할 문제/수정안 목록:")
+        for s in suggestions:
+            parts.append(f"- {s.location}: {s.message} -> {s.suggestion}")
+    return "\n".join(parts)
+
+
+def _revision_max_output_tokens(text: str) -> int:
+    max_output_tokens_raw = os.environ.get("LLM_MAX_OUTPUT_TOKENS")
+    if max_output_tokens_raw:
+        return int(max_output_tokens_raw)
+    # 문서 전체를 거의 그대로(+ 수정 반영) 다시 써야 해서, 출력 길이가 입력
+    # 길이에 비례한다. 한글은 토큰당 글자 수가 영어보다 적어(토큰을 더 많이
+    # 씀) 글자당 2토큰으로 넉넉하게 잡는다.
+    return max(DEFAULT_MAX_OUTPUT_TOKENS, len(text) * 2 + 1024)
+
+
+def _generate_revised_document(
+    page: ConfluencePage, text: str, suggestions: list[Suggestion], model: str, timeout: float
+) -> str | None:
+    """문서 전체 수정본을 만들어본다 (best-effort).
+
+    이 호출은 출력이 길어서(문서 전체를 거의 그대로 다시 써야 함) 소형
+    모델일수록 중간에 잘리거나 실패하기 쉽다. new_findings/rule_fixes(더
+    짧고 안정적으로 성공하는 부분)와 분리된 별도 호출로 두고, 실패해도
+    예외를 던지지 않고 None을 반환한다 - 그래야 이 부분만 실패했을 때도
+    호출자가 이미 성공한 결과를 잃지 않는다.
+    """
+    max_output_tokens = _revision_max_output_tokens(text)
+    user_content = _build_revision_user_content(page, text, suggestions)
+
+    try:
+        response = _client().chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": REVISION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.2,
+            timeout=timeout,
+            max_tokens=max_output_tokens,
+        )
+    except Exception:  # noqa: BLE001 - best-effort, 실패해도 나머지 결과는 살림
+        return None
+
+    choice = response.choices[0]
+    if getattr(choice, "finish_reason", None) == "length":
+        return None
+
+    revised = (choice.message.content or "").strip()
+    return revised or None
+
+
 def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> LLMReviewResult:
     """설정된 LLM으로 페이지 내용을 심층 검토한다.
 
@@ -283,12 +351,16 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
     만든 구체적인(복사-붙여넣기 가능한) 수정안으로 suggestion 필드를 갱신하고,
     거기에 LLM이 새로 찾은 문제들을 더해서 반환한다. rule_suggestions를 안
     넘기면 새로 찾은 문제들만 반환한다 (규칙 없이 LLM 검토만 쓰는 경우).
-    거기에 더해 문서 전체를 다시 쓴 수정본(revised_document)도 만든다.
+
+    이어서 별도 호출로 문서 전체를 다시 쓴 수정본(revised_document)도 만들어
+    본다. 이 두 번째 호출은 출력이 길어 실패하기 쉬우므로 best-effort로
+    처리한다 - 실패해도 예외를 던지지 않고 revised_document만 None으로 둔다
+    (첫 번째 호출에서 이미 얻은 suggestions는 그대로 유지된다).
 
     LLM_BASE_URL이 없으면 rule_suggestions를 그대로(원래 조언 형태로) 담고
-    revised_document는 None인 결과를 반환한다. 그 외 설정 누락이나 호출/응답
-    실패는 LLMReviewError로 감싸서 던진다 (호출자가 나머지 규칙 기반 결과는
-    살리고 이 부분만 실패로 표시할 수 있도록).
+    revised_document는 None인 결과를 반환한다. 그 외 설정 누락이나 첫 번째
+    호출(찾기/수정안) 자체의 실패는 LLMReviewError로 감싸서 던진다 (호출자가
+    나머지 규칙 기반 결과는 살리고 이 부분만 실패로 표시할 수 있도록).
     """
     rule_suggestions = rule_suggestions or []
 
@@ -308,17 +380,6 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
     if not text.strip():
         return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
 
-    max_output_tokens_raw = os.environ.get("LLM_MAX_OUTPUT_TOKENS")
-    if max_output_tokens_raw:
-        max_output_tokens = int(max_output_tokens_raw)
-    else:
-        # revised_document는 문서 전체를 거의 그대로(+ 수정 반영) 다시 써야 해서,
-        # 출력 길이가 입력 길이에 비례한다. 고정값으로 두면 문서가 조금만 길어져도
-        # 응답이 중간에 잘려 JSON 파싱이 매번 실패한다 - 입력 길이에 맞춰 늘린다.
-        # 한글은 토큰당 글자 수가 영어보다 적어(토큰을 더 많이 씀) 글자당 2토큰으로
-        # 넉넉하게 잡고, JSON 이스케이프/new_findings 등 부가 출력분도 버퍼로 더한다.
-        max_output_tokens = max(DEFAULT_MAX_OUTPUT_TOKENS, len(text) * 2 + 1024)
-
     user_content = _build_user_content(page, text, rule_suggestions)
 
     try:
@@ -330,7 +391,7 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
             ],
             temperature=0.2,
             timeout=timeout,
-            max_tokens=max_output_tokens,
+            max_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
         )
     except Exception as e:  # noqa: BLE001 - 원인 그대로 사용자에게 보여줌
         raise LLMReviewError(f"LLM 호출에 실패했습니다: {e}") from e
@@ -338,8 +399,8 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
     choice = response.choices[0]
     if getattr(choice, "finish_reason", None) == "length":
         raise LLMReviewError(
-            f"LLM 응답이 최대 토큰({max_output_tokens}) 제한으로 중간에 잘렸습니다. "
-            "LLM_MAX_OUTPUT_TOKENS를 늘리거나 LLM_MAX_INPUT_CHARS를 줄여서 다시 시도하세요."
+            f"LLM 응답이 최대 토큰({DEFAULT_MAX_OUTPUT_TOKENS}) 제한으로 중간에 잘렸습니다. "
+            "규칙 위반 수나 발견된 문제가 유난히 많은 문서일 수 있습니다."
         )
 
     raw = choice.message.content or ""
@@ -347,6 +408,8 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
 
     updated_rule_suggestions = _apply_rule_fixes(rule_suggestions, data["rule_fixes"])
     new_findings = _to_suggestions(data["new_findings"])
-    revised_document = data["revised_document"] or None
+    all_suggestions = updated_rule_suggestions + new_findings
 
-    return LLMReviewResult(suggestions=updated_rule_suggestions + new_findings, revised_document=revised_document)
+    revised_document = _generate_revised_document(page, text, all_suggestions, model, timeout)
+
+    return LLMReviewResult(suggestions=all_suggestions, revised_document=revised_document)
