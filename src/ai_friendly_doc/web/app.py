@@ -10,7 +10,6 @@ from pathlib import Path
 import markdown as md
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -24,7 +23,6 @@ from .security import SecurityConfigError, decrypt_token, encrypt_token, hash_pa
 BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(title="ai-friendly-doc")
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 session_secret = os.environ.get("SESSION_SECRET")
