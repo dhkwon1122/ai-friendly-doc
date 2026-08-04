@@ -2,6 +2,26 @@
 {% block title %}분석 - ai-friendly-doc{% endblock %}
 {% block content %}
 <h1>Confluence 문서 분석</h1>
+
+{% if core_guidelines %}
+<details class="guideline-ref">
+  <summary>AI-Friendly 문서 작성 가이드라인 (핵심 {{ core_guidelines|length }} + 추가 권장 {{ extra_guidelines|length }})</summary>
+  <p class="hint">핵심 가이드라인은 점수 산정 기준이 되고, 추가 권장 가이드는 제안으로만 나오고 점수에는 반영되지 않습니다.</p>
+  <h3>핵심 가이드라인</h3>
+  <ol>
+    {% for g in core_guidelines %}
+    <li>{{ g.label }}</li>
+    {% endfor %}
+  </ol>
+  <h3>추가 권장 가이드</h3>
+  <ol>
+    {% for g in extra_guidelines %}
+    <li>{{ g.label }}</li>
+    {% endfor %}
+  </ol>
+</details>
+{% endif %}
+
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <form method="post" action="/analyze">
   <fieldset>

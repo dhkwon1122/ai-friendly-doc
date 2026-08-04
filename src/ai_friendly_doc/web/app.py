@@ -16,6 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from ..analyzer import analyze_page
 from ..config import ConfluenceConfig, parse_bool_env
 from ..confluence_client import ConfluenceClient
+from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES
 from ..report import render_report
 from . import db
 from .security import SecurityConfigError, decrypt_token, encrypt_token, hash_password, verify_password
@@ -228,7 +229,7 @@ def analyze_form(request: Request):
         return RedirectResponse("/login", status_code=303)
     if not db.get_credentials(user.id):
         return RedirectResponse("/settings?onboarding=1", status_code=303)
-    return render(request, "analyze.html")
+    return render(request, "analyze.html", core_guidelines=CORE_GUIDELINES, extra_guidelines=EXTRA_GUIDELINES)
 
 
 @app.post("/analyze", response_class=HTMLResponse)
@@ -237,15 +238,26 @@ def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(..
     if not user:
         return RedirectResponse("/login", status_code=303)
 
+    guideline_context = {"core_guidelines": CORE_GUIDELINES, "extra_guidelines": EXTRA_GUIDELINES}
+
     try:
         reports = _run_analysis(user, mode, value)
     except SecurityConfigError as e:
-        return render(request, "analyze.html", error=str(e), mode=mode, value=value)
+        return render(request, "analyze.html", error=str(e), mode=mode, value=value, **guideline_context)
     except Exception as e:  # noqa: BLE001 - 사용자에게 원인 표시
-        return render(request, "analyze.html", error=f"Confluence 조회 중 오류: {e}", mode=mode, value=value)
+        return render(
+            request, "analyze.html", error=f"Confluence 조회 중 오류: {e}", mode=mode, value=value, **guideline_context
+        )
 
     if not reports:
-        return render(request, "analyze.html", error="분석할 페이지를 찾지 못했습니다.", mode=mode, value=value)
+        return render(
+            request,
+            "analyze.html",
+            error="분석할 페이지를 찾지 못했습니다.",
+            mode=mode,
+            value=value,
+            **guideline_context,
+        )
 
     report_markdown = render_report(reports)
     report_html = md.markdown(report_markdown, extensions=["tables"])
@@ -256,6 +268,7 @@ def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(..
         value=value,
         report_html=report_html,
         report_markdown=report_markdown,
+        **guideline_context,
     )
 
 
