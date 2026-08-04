@@ -74,9 +74,11 @@ ai-friendly-doc-web
 
 흐름:
 1. `/register`에서 계정 생성 (아이디 + 비밀번호, bcrypt로 해시 저장)
-2. `/settings`에서 본인의 Confluence Base URL / 인증 방식(Cloud는 basic+이메일,
-   Server·DC는 bearer+PAT 또는 userpass+계정 ID/비밀번호) / API 토큰(또는 비밀번호) 입력 → 값은 `FERNET_KEY`로 암호화되어
-   DB에 저장
+2. `/settings`에서 본인의 인증 방식(Cloud는 basic+이메일, Server·DC는 bearer+PAT
+   또는 userpass+계정 ID/비밀번호) / API 토큰(또는 비밀번호) 입력 → 값은 `FERNET_KEY`로
+   암호화되어 DB에 저장. Confluence Base URL은 `.env`의 `CONFLUENCE_BASE_URL`이
+   설정돼 있으면 그 값이 모든 사용자에게 고정 적용되어(입력창이 읽기 전용으로
+   표시됨) 따로 입력할 필요가 없고, 비워두면 사용자가 각자 입력한다.
 3. `/analyze`에서 페이지 ID(들) 또는 스페이스 키를 입력해 분석 실행 →
    결과는 화면에 바로 렌더링되고, "Markdown으로 다운로드" 버튼으로 파일도
    받을 수 있음. Write API는 여전히 호출하지 않으므로 원본 문서는 변경되지
