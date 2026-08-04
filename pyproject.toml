@@ -8,6 +8,16 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "python-dotenv>=1.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.1",
+    "bcrypt>=4.1",
+    "cryptography>=42.0",
+    "markdown>=3.5",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +27,7 @@ dev = [
 
 [project.scripts]
 ai-friendly-doc = "ai_friendly_doc.cli:main"
+ai-friendly-doc-web = "ai_friendly_doc.web.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
