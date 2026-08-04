@@ -268,6 +268,7 @@ def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(..
         value=value,
         report_html=report_html,
         report_markdown=report_markdown,
+        reports=reports,
         **guideline_context,
     )
 
