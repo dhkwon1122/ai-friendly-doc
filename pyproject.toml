@@ -1,0 +1,22 @@
+[project]
+name = "ai-friendly-doc"
+version = "0.1.0"
+description = "Confluence 문서를 읽어 AI-friendly 관점에서 개선 제안을 만들어주는 도구"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+ai-friendly-doc = "ai_friendly_doc.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
