@@ -1,9 +1,14 @@
 """LLM(사내 vLLM 등 OpenAI 호환 API)을 이용한 심층 문서 검토.
 
 규칙 엔진(rules/)이 구조적인 문제(제목 계층, 표 헤더, alt 텍스트 등)를
-잡는다면, 이 모듈은 실제 내용을 LLM에게 읽혀서 "AI가 이 문서만 보고
-정확히 이해할 수 있는가" 관점의 문제(모호한 지시어, 설명 없는 사내
-용어, 생략된 전제, 불명확한 결론 등)를 찾아 Suggestion으로 만든다.
+잡는다면, 이 모듈은 실제 내용을 LLM에게 읽혀서 두 가지를 한다:
+
+1. 규칙 엔진이 잡지 못하는 문제(모호한 지시어, 설명 없는 사내 용어, 생략된
+   전제, 불명확한 결론 등)를 새로 찾는다.
+2. 규칙 엔진이 이미 찾은 문제들에 대해, 그냥 조언이 아니라 문서에 바로
+   복사해서 붙여넣을 수 있는 실제 수정 텍스트를 만들어 채워준다. (규칙
+   엔진은 "표에 헤더가 없다"는 사실은 알지만 실제로 어떤 문구를 채워야
+   하는지는 모르고, LLM은 문서 내용을 읽었으니 채울 수 있다.)
 
 LLM_BASE_URL이 설정된 경우에만 동작하며, analyzer.analyze_page()가
 설정 여부를 보고 자동으로 호출한다.
@@ -11,6 +16,7 @@ LLM_BASE_URL이 설정된 경우에만 동작하며, analyzer.analyze_page()가
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 
@@ -28,7 +34,11 @@ _HEADING_LEVELS = {f"h{i}": i for i in range(1, 7)}
 
 # 이 셋에 속한 가이드라인은 규칙 엔진이 원본 HTML(colspan/매크로/스타일 태그 등)로
 # 이미 판별하는데, LLM에게는 그 정보가 다 빠진 평문만 전달되기 때문에(아래
-# storage_html_to_plain_text 참고) LLM에게 판단해달라고 요청하지 않는다.
+# storage_html_to_plain_text 참고) LLM에게 새로 찾아달라고 요청하지는 않는다.
+# (다만 이 가이드라인에 해당하는 규칙 위반이라도, rule_fixes를 통한 구체적인
+# 수정 텍스트 생성 요청 대상에서는 제외하지 않는다 - 예를 들어 표 병합 문제
+# 자체는 LLM이 새로 "찾을" 수 없지만, 규칙이 이미 찾아준 뒤 "이 표를 어떻게
+# 다시 쓰면 좋을지"는 LLM이 문서 내용을 보고 제안할 수 있다.)
 _LLM_INVISIBLE_GUIDELINE_IDS = {"extra-2", "extra-3", "extra-7"}
 
 
@@ -41,23 +51,42 @@ SYSTEM_PROMPT = f"""\
 당신은 사내 Confluence 문서를 검토해서, AI 에이전트나 RAG 시스템이 이 문서 \
 "만" 읽고도 정확하게 이해하고 활용할 수 있는지를 평가하는 전문가입니다.
 
-이 조직은 다음과 같은 "AI-friendly 문서 작성 가이드라인"을 정해두었습니다.
-문서를 읽으며 이 가이드라인들을 기준으로 위반 사항을 찾으세요:
+이 조직은 다음과 같은 "AI-friendly 문서 작성 가이드라인"을 정해두었습니다:
 
 {_guideline_checklist()}
 
-이 목록에 명확히 해당하지 않아도, AI가 이 문서를 오독하거나 잘못 요약할 만한
-문제라면 함께 지적하세요(그 경우 guideline은 "other"로 남기세요).
+사용자 메시지에는 문서 본문이 주어지고, 이미 구조 검사(규칙 엔진)로 발견된
+문제 목록이 번호와 함께 같이 주어질 수 있습니다. 다음 두 가지를 모두
+수행하세요:
 
-각 문제를 JSON 배열로만 답하세요. 다른 설명이나 코드펜스 없이 배열만 출력합니다.
-배열의 각 항목은 다음 필드를 가진 객체입니다:
+1. **새 문제 찾기**: 위 가이드라인 관점에서, 아직 목록에 없는 문제를 새로
+   찾으세요. 이 목록에 명확히 해당하지 않아도 AI가 이 문서를 오독하거나
+   잘못 요약할 만한 문제라면 함께 지적하세요(그 경우 guideline은 "other").
+2. **기존 문제에 대한 실제 수정안 작성**: 주어진 기존 문제 목록의 각 항목에
+   대해, 조언이 아니라 문서에 그대로 복사해서 붙여넣을 수 있는 실제 수정
+   텍스트를 작성하세요. 문서에 실제로 있는 정보(제목, 본문 내용, 이미지
+   파일명, 표의 다른 셀 값 등)를 최대한 활용해서 구체적으로 채우세요.
+   확실히 알 수 없는 부분(예: 이미지의 실제 내용, 정확한 날짜)은 문서 안의
+   단서로 최선을 다해 추정하고, 추정이라는 것을 짧게 표시하세요
+   (예: "(파일명 기준 추정, 확인 필요)").
+
+새로 찾은 문제는 다음 필드를 가진 객체로 만드세요. "suggestion"은 조언이
+아니라 실제로 붙여넣을 수 있는 구체적인 문구/문장이어야 합니다:
 {{"severity": "info" | "warning" | "critical",
  "location": "어느 부분에 대한 지적인지 (섹션/문단을 짧게 인용하거나 설명)",
  "message": "무엇이 문제인지",
- "suggestion": "구체적으로 어떻게 고치면 좋을지. 가능하면 고친 예시 문장을 포함",
+ "suggestion": "실제로 붙여넣을 수 있는 구체적인 수정 문구/문장",
  "guideline": "위 목록의 id 중 가장 관련 있는 것 (예: \\"core-1\\"), 없으면 \\"other\\""}}
 
-문제가 없으면 빈 배열 []을 반환하세요.
+기존 문제에 대한 수정안은 다음 필드를 가진 객체로 만드세요:
+{{"index": 기존 문제 목록에 표시된 번호(정수),
+ "fix": "실제로 붙여넣을 수 있는 구체적인 수정 텍스트"}}
+
+다음 JSON 객체 형식으로만 답하세요. 다른 설명이나 코드펜스 없이 이 객체만
+출력합니다:
+{{"new_findings": [...], "rule_fixes": [...]}}
+
+찾은 문제나 만들 수정안이 없으면 해당 배열을 빈 배열로 두세요.
 """
 
 
@@ -108,8 +137,7 @@ def storage_html_to_plain_text(storage_html: str, max_chars: int | None = DEFAUL
                     if any(cells):
                         lines.append("| " + " | ".join(cells) + " |")
             elif name in ("ac:image", "img"):
-                alt = child.get("ac:alt") or child.get("alt") or ""
-                lines.append(f"[이미지{': ' + alt if alt else ' (대체 텍스트 없음)'}]")
+                lines.append(_image_line(child, name))
             else:
                 walk(child)
 
@@ -120,18 +148,38 @@ def storage_html_to_plain_text(storage_html: str, max_chars: int | None = DEFAUL
     return text
 
 
-def _parse_llm_json(raw: str) -> list[dict]:
-    text = raw.strip()
+def _image_line(el: Tag, name: str) -> str:
+    alt = el.get("ac:alt") or el.get("alt") or ""
+    if alt:
+        return f"[이미지: {alt}]"
+    filename = None
+    filename_el = el.find(["ri:attachment", "ri:url"])
+    if filename_el is not None:
+        filename = filename_el.get("ri:filename") or filename_el.get("ri:value")
+    elif name == "img":
+        filename = el.get("src")
+    marker = f", 파일명: {filename}" if filename else ""
+    return f"[이미지 (대체 텍스트 없음{marker})]"
+
+
+def _strip_code_fence(text: str) -> str:
+    text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
         if text.lower().startswith("json"):
             text = text[4:]
         text = text.strip()
+    return text
+
+
+def _parse_llm_response(raw: str) -> dict:
+    """{"new_findings": [...], "rule_fixes": [...]} 형태의 JSON 객체를 파싱한다."""
+    text = _strip_code_fence(raw)
 
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        start, end = text.find("["), text.rfind("]")
+        start, end = text.find("{"), text.rfind("}")
         if start == -1 or end == -1 or end <= start:
             raise LLMReviewError(f"LLM 응답을 JSON으로 해석하지 못했습니다: {raw[:200]!r}") from None
         try:
@@ -139,9 +187,15 @@ def _parse_llm_json(raw: str) -> list[dict]:
         except json.JSONDecodeError as e:
             raise LLMReviewError(f"LLM 응답을 JSON으로 해석하지 못했습니다: {raw[:200]!r}") from e
 
-    if not isinstance(data, list):
-        raise LLMReviewError("LLM 응답이 예상한 JSON 배열 형식이 아닙니다.")
-    return data
+    if not isinstance(data, dict):
+        raise LLMReviewError("LLM 응답이 예상한 JSON 객체 형식이 아닙니다.")
+
+    new_findings = data.get("new_findings", [])
+    rule_fixes = data.get("rule_fixes", [])
+    if not isinstance(new_findings, list) or not isinstance(rule_fixes, list):
+        raise LLMReviewError("LLM 응답의 new_findings/rule_fixes가 배열 형식이 아닙니다.")
+
+    return {"new_findings": new_findings, "rule_fixes": rule_fixes}
 
 
 def _to_suggestions(items: list[dict]) -> list[Suggestion]:
@@ -166,15 +220,57 @@ def _to_suggestions(items: list[dict]) -> list[Suggestion]:
     return suggestions
 
 
-def review_with_llm(page: ConfluencePage) -> list[Suggestion]:
-    """설정된 LLM으로 페이지 내용을 심층 검토해 Suggestion 목록을 반환한다.
+def _apply_rule_fixes(rule_suggestions: list[Suggestion], fixes: list[dict]) -> list[Suggestion]:
+    """LLM이 만든 구체적 수정안을 인덱스로 매칭해 규칙 기반 Suggestion에 채워 넣는다.
 
-    LLM_BASE_URL이 없으면 빈 목록을 반환한다. 그 외 설정 누락이나 호출/응답
-    실패는 LLMReviewError로 감싸서 던진다 (호출자가 나머지 규칙 기반 결과는
-    살리고 이 부분만 실패로 표시할 수 있도록).
+    매칭 안 된 항목은 원래의(조언 형태) suggestion을 그대로 유지한다.
     """
+    fix_by_index: dict[int, str] = {}
+    for item in fixes:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        fix_text = item.get("fix")
+        if isinstance(fix_text, str) and fix_text.strip():
+            fix_by_index[idx] = fix_text.strip()
+
+    updated = []
+    for i, s in enumerate(rule_suggestions):
+        fix_text = fix_by_index.get(i)
+        updated.append(dataclasses.replace(s, suggestion=fix_text) if fix_text else s)
+    return updated
+
+
+def _build_user_content(page: ConfluencePage, text: str, rule_suggestions: list[Suggestion]) -> str:
+    parts = [f"문서 제목: {page.title}", "", text]
+    if rule_suggestions:
+        parts.append("")
+        parts.append("---")
+        parts.append("이미 구조 검사로 발견된 문제 목록 (각 항목에 대한 구체적 수정안을 rule_fixes에 담아 응답):")
+        for i, s in enumerate(rule_suggestions):
+            parts.append(f"{i}. [{s.rule_id}] {s.location}: {s.message}")
+    return "\n".join(parts)
+
+
+def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> list[Suggestion]:
+    """설정된 LLM으로 페이지 내용을 심층 검토한다.
+
+    rule_suggestions를 넘기면, 그 각각에 대해 LLM이 실제 문서 내용을 참고해
+    만든 구체적인(복사-붙여넣기 가능한) 수정안으로 suggestion 필드를 갱신하고,
+    거기에 LLM이 새로 찾은 문제들을 더해서 반환한다. rule_suggestions를 안
+    넘기면 새로 찾은 문제들만 반환한다 (규칙 없이 LLM 검토만 쓰는 경우).
+
+    LLM_BASE_URL이 없으면 rule_suggestions를 그대로(원래 조언 형태로) 반환한다.
+    그 외 설정 누락이나 호출/응답 실패는 LLMReviewError로 감싸서 던진다
+    (호출자가 나머지 규칙 기반 결과는 살리고 이 부분만 실패로 표시할 수 있도록).
+    """
+    rule_suggestions = rule_suggestions or []
+
     if not is_llm_configured():
-        return []
+        return list(rule_suggestions)
 
     model = os.environ.get("LLM_MODEL")
     if not model:
@@ -187,14 +283,16 @@ def review_with_llm(page: ConfluencePage) -> list[Suggestion]:
 
     text = storage_html_to_plain_text(page.storage_html, max_chars=max_chars)
     if not text.strip():
-        return []
+        return list(rule_suggestions)
+
+    user_content = _build_user_content(page, text, rule_suggestions)
 
     try:
         response = _client().chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"문서 제목: {page.title}\n\n{text}"},
+                {"role": "user", "content": user_content},
             ],
             temperature=0.2,
             timeout=timeout,
@@ -203,5 +301,9 @@ def review_with_llm(page: ConfluencePage) -> list[Suggestion]:
         raise LLMReviewError(f"LLM 호출에 실패했습니다: {e}") from e
 
     raw = response.choices[0].message.content or ""
-    items = _parse_llm_json(raw)
-    return _to_suggestions(items)
+    data = _parse_llm_response(raw)
+
+    updated_rule_suggestions = _apply_rule_fixes(rule_suggestions, data["rule_fixes"])
+    new_findings = _to_suggestions(data["new_findings"])
+
+    return updated_rule_suggestions + new_findings
