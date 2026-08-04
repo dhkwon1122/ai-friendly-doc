@@ -15,7 +15,7 @@ class ConfigError(RuntimeError):
 @dataclass(frozen=True)
 class ConfluenceConfig:
     base_url: str
-    auth_type: str  # "basic" (Cloud: email + api token) | "bearer" (Server/DC: PAT)
+    auth_type: str  # "basic" (Cloud: email + api token) | "bearer" (Server/DC: PAT) | "userpass" (Server/DC: 계정 ID + 비밀번호)
     email: str | None
     api_token: str
 
@@ -46,8 +46,10 @@ def load_confluence_config() -> ConfluenceConfig:
             + ", ".join(missing)
             + " (.env.example 참고)"
         )
-    if auth_type == "basic" and not email:
-        raise ConfigError("CONFLUENCE_AUTH_TYPE=basic 인 경우 CONFLUENCE_EMAIL이 필요합니다.")
+    if auth_type in ("basic", "userpass") and not email:
+        raise ConfigError(
+            f"CONFLUENCE_AUTH_TYPE={auth_type} 인 경우 CONFLUENCE_EMAIL(계정 ID/이메일)이 필요합니다."
+        )
 
     return ConfluenceConfig(
         base_url=base_url,

@@ -129,12 +129,12 @@ def settings_submit(
     base_url = base_url.strip().rstrip("/")
     existing = db.get_credentials(user.id)
 
-    if not base_url or auth_type not in ("basic", "bearer"):
+    if not base_url or auth_type not in ("basic", "bearer", "userpass"):
         return render(request, "settings.html", creds=existing, error="필수 값을 확인하세요.")
-    if auth_type == "basic" and not email.strip():
-        return render(request, "settings.html", creds=existing, error="Cloud(basic) 인증은 이메일이 필요합니다.")
+    if auth_type in ("basic", "userpass") and not email.strip():
+        return render(request, "settings.html", creds=existing, error="계정 ID/이메일이 필요합니다.")
     if not api_token and not existing:
-        return render(request, "settings.html", creds=existing, error="API 토큰을 입력하세요.")
+        return render(request, "settings.html", creds=existing, error="API 토큰/비밀번호를 입력하세요.")
 
     try:
         token_to_store = encrypt_token(api_token) if api_token else existing.encrypted_token

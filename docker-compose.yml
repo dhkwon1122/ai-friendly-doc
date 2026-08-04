@@ -3,9 +3,10 @@ services:
     build:
       context: .
       args:
-        # .env에 PIP_INDEX_URL을 지정해두면 사내 PyPI 저장소로 빌드한다.
-        # 지정 안 하면 Dockerfile 기본값(공개 PyPI)을 그대로 쓴다.
+        # .env에 PIP_INDEX_URL/PIP_TRUSTED_HOST를 지정해두면 사내 PyPI 저장소로 빌드한다.
+        # 지정 안 하면 Dockerfile 기본값(공개 PyPI, trusted-host 없음)을 그대로 쓴다.
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     image: ai-friendly-doc-web:latest
     restart: unless-stopped
     ports:
