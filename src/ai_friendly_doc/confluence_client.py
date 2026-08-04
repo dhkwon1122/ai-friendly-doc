@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Iterator
 
 import requests
+import urllib3
 
 from .config import ConfluenceConfig
 
@@ -28,6 +29,11 @@ class ConfluenceClient:
     def __init__(self, config: ConfluenceConfig, session: requests.Session | None = None):
         self._config = config
         self._session = session or requests.Session()
+        self._session.verify = config.verify_ssl
+        if not config.verify_ssl:
+            # 사내 서버가 자체 서명 인증서를 쓰는 경우 검증을 끄되, urllib3의
+            # InsecureRequestWarning이 요청마다 쏟아지는 것은 막는다.
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         if config.auth_type in ("basic", "userpass"):
             # basic: Cloud (이메일 + API 토큰), userpass: Server/DC (계정 ID + 비밀번호)
             # 둘 다 HTTP Basic Auth로 (email, api_token) 튜플을 보내는 것은 동일함.

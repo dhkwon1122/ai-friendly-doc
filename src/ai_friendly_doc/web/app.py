@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..analyzer import analyze_page
-from ..config import ConfluenceConfig
+from ..config import ConfluenceConfig, parse_bool_env
 from ..confluence_client import ConfluenceClient
 from ..report import render_report
 from . import db
@@ -104,6 +104,19 @@ def logout(request: Request):
 # ---- Confluence 연동 정보 설정 ---------------------------------------------
 
 
+def _fixed_base_url() -> str | None:
+    """조직 전체가 공유하는 단일 Confluence 인스턴스면 .env에 고정해둘 수 있다.
+    설정돼 있으면 사용자는 base_url을 입력할 필요 없이 인증 정보만 입력한다."""
+    value = (os.environ.get("CONFLUENCE_BASE_URL") or "").strip().rstrip("/")
+    return value or None
+
+
+def _verify_ssl() -> bool:
+    """사내 Confluence가 자체 서명 인증서를 쓰면 .env에 CONFLUENCE_VERIFY_SSL=false로
+    끌 수 있다. base_url과 마찬가지로 서버 전체에 적용되는 배포 단위 설정이다."""
+    return parse_bool_env(os.environ.get("CONFLUENCE_VERIFY_SSL"), default=True)
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_form(request: Request):
     user = current_user(request)
@@ -111,13 +124,19 @@ def settings_form(request: Request):
         return RedirectResponse("/login", status_code=303)
     creds = db.get_credentials(user.id)
     onboarding = request.query_params.get("onboarding") == "1"
-    return render(request, "settings.html", creds=creds, onboarding=onboarding)
+    return render(
+        request,
+        "settings.html",
+        creds=creds,
+        onboarding=onboarding,
+        fixed_base_url=_fixed_base_url(),
+    )
 
 
 @app.post("/settings", response_class=HTMLResponse)
 def settings_submit(
     request: Request,
-    base_url: str = Form(...),
+    base_url: str = Form(""),
     auth_type: str = Form(...),
     email: str = Form(""),
     api_token: str = Form(""),
@@ -126,20 +145,35 @@ def settings_submit(
     if not user:
         return RedirectResponse("/login", status_code=303)
 
-    base_url = base_url.strip().rstrip("/")
+    fixed_base_url = _fixed_base_url()
+    base_url = fixed_base_url or base_url.strip().rstrip("/")
     existing = db.get_credentials(user.id)
 
     if not base_url or auth_type not in ("basic", "bearer", "userpass"):
-        return render(request, "settings.html", creds=existing, error="필수 값을 확인하세요.")
+        return render(
+            request, "settings.html", creds=existing, error="필수 값을 확인하세요.", fixed_base_url=fixed_base_url
+        )
     if auth_type in ("basic", "userpass") and not email.strip():
-        return render(request, "settings.html", creds=existing, error="계정 ID/이메일이 필요합니다.")
+        return render(
+            request,
+            "settings.html",
+            creds=existing,
+            error="계정 ID/이메일이 필요합니다.",
+            fixed_base_url=fixed_base_url,
+        )
     if not api_token and not existing:
-        return render(request, "settings.html", creds=existing, error="API 토큰/비밀번호를 입력하세요.")
+        return render(
+            request,
+            "settings.html",
+            creds=existing,
+            error="API 토큰/비밀번호를 입력하세요.",
+            fixed_base_url=fixed_base_url,
+        )
 
     try:
         token_to_store = encrypt_token(api_token) if api_token else existing.encrypted_token
     except SecurityConfigError as e:
-        return render(request, "settings.html", creds=existing, error=str(e))
+        return render(request, "settings.html", creds=existing, error=str(e), fixed_base_url=fixed_base_url)
 
     db.save_credentials(
         user_id=user.id,
@@ -148,7 +182,13 @@ def settings_submit(
         email=email.strip() or None,
         encrypted_token=token_to_store,
     )
-    return render(request, "settings.html", creds=db.get_credentials(user.id), saved=True)
+    return render(
+        request,
+        "settings.html",
+        creds=db.get_credentials(user.id),
+        saved=True,
+        fixed_base_url=fixed_base_url,
+    )
 
 
 # ---- 분석 ------------------------------------------------------------------
@@ -159,10 +199,11 @@ def _build_client(user: db.User) -> ConfluenceClient:
     if not creds:
         raise SecurityConfigError("먼저 설정 페이지에서 Confluence 연동 정보를 입력하세요.")
     config = ConfluenceConfig(
-        base_url=creds.base_url,
+        base_url=_fixed_base_url() or creds.base_url,
         auth_type=creds.auth_type,
         email=creds.email,
         api_token=decrypt_token(creds.encrypted_token),
+        verify_ssl=_verify_ssl(),
     )
     return ConfluenceClient(config)
 
