@@ -19,6 +19,16 @@
 다해 시도하되(best-effort), 실패해도 1·2번 결과(suggestions)는 그대로
 살리고 revised_document만 None으로 둔다.
 
+1·2번 호출은 실패하면(타임아웃, 응답 잘림, 깨진 JSON 등) 규칙 기반
+가이드라인 점수 계산에서 LLM 전용 항목들이 전부 "확인 불가"로 표시된다
+(guidelines.score_document 참고). 실제 페이지로 반복 테스트하면 규칙
+위반이 많아 출력이 길어지거나 그때그때 모델 상태에 따라 이 호출이 가끔
+실패할 수 있어서, 같은 문서를 여러 번 분석했을 때 결과가 "준수"와
+"확인 불가"를 오가는 것처럼 보일 수 있다. 이를 줄이기 위해 (a) 규칙
+위반 개수에 비례해 출력 토큰 예산을 넉넉히 잡고, (b) 실패하면 한 번
+재시도하며, (c) temperature를 0으로 둬서 같은 입력에 대한 응답을 최대한
+일관되게 만든다.
+
 LLM_BASE_URL이 설정된 경우에만 동작하며, analyzer.analyze_page()가
 설정 여부를 보고 자동으로 호출한다.
 """
@@ -38,7 +48,8 @@ from .rules import Severity, Suggestion
 
 DEFAULT_MAX_INPUT_CHARS = 12000
 DEFAULT_TIMEOUT_SECONDS = 60.0
-DEFAULT_MAX_OUTPUT_TOKENS = 4096  # 찾기/수정안(1번 호출)용 고정 예산. 수정본(2번 호출)은 문서 길이에 비례해 별도 계산됨
+DEFAULT_MAX_OUTPUT_TOKENS = 4096  # 찾기/수정안(1번 호출)의 최소 예산. 규칙 위반이 많으면 늘어남 (_findings_max_output_tokens 참고)
+FINDINGS_MAX_ATTEMPTS = 2  # 1번 호출(찾기/수정안)이 실패하면 이만큼(최초 시도 포함) 시도한다
 
 _HEADING_LEVELS = {f"h{i}": i for i in range(1, 7)}
 
@@ -287,6 +298,42 @@ def _build_user_content(page: ConfluencePage, text: str, rule_suggestions: list[
     return "\n".join(parts)
 
 
+def _findings_max_output_tokens(rule_suggestions: list[Suggestion]) -> int:
+    # rule_fixes 배열은 항목마다 복사-붙여넣기용 수정 텍스트를 채워야 해서,
+    # 규칙 위반이 많은(지저분한 실제) 문서일수록 출력이 길어진다. 개수에
+    # 비례해 여유를 둔다 (항목당 대략 250토큰 버퍼).
+    return max(DEFAULT_MAX_OUTPUT_TOKENS, len(rule_suggestions) * 250 + DEFAULT_MAX_OUTPUT_TOKENS)
+
+
+def _run_findings_call(model: str, timeout: float, user_content: str, max_output_tokens: int) -> dict:
+    """새 문제 찾기/수정안 채우기 LLM 호출을 1회 시도한다. 실패하면(호출 자체
+    실패, 응답 잘림, JSON 파싱 실패) LLMReviewError를 던진다 - 호출자가 재시도
+    여부를 결정한다."""
+    try:
+        response = _client().chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.0,
+            timeout=timeout,
+            max_tokens=max_output_tokens,
+        )
+    except Exception as e:  # noqa: BLE001 - 원인 그대로 사용자에게 보여줌
+        raise LLMReviewError(f"LLM 호출에 실패했습니다: {e}") from e
+
+    choice = response.choices[0]
+    if getattr(choice, "finish_reason", None) == "length":
+        raise LLMReviewError(
+            f"LLM 응답이 최대 토큰({max_output_tokens}) 제한으로 중간에 잘렸습니다. "
+            "규칙 위반 수나 발견된 문제가 유난히 많은 문서일 수 있습니다."
+        )
+
+    raw = choice.message.content or ""
+    return _parse_llm_response(raw)
+
+
 def _build_revision_user_content(page: ConfluencePage, text: str, suggestions: list[Suggestion]) -> str:
     parts = [f"문서 제목: {page.title}", "", "원본 문서:", text]
     if suggestions:
@@ -329,7 +376,7 @@ def _generate_revised_document(
                 {"role": "system", "content": REVISION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ],
-            temperature=0.2,
+            temperature=0.0,
             timeout=timeout,
             max_tokens=max_output_tokens,
         )
@@ -359,8 +406,9 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
 
     LLM_BASE_URL이 없으면 rule_suggestions를 그대로(원래 조언 형태로) 담고
     revised_document는 None인 결과를 반환한다. 그 외 설정 누락이나 첫 번째
-    호출(찾기/수정안) 자체의 실패는 LLMReviewError로 감싸서 던진다 (호출자가
-    나머지 규칙 기반 결과는 살리고 이 부분만 실패로 표시할 수 있도록).
+    호출(찾기/수정안) 자체의 실패는 최대 FINDINGS_MAX_ATTEMPTS번 재시도해 본
+    뒤 LLMReviewError로 감싸서 던진다 (호출자가 나머지 규칙 기반 결과는
+    살리고 이 부분만 실패로 표시할 수 있도록).
     """
     rule_suggestions = rule_suggestions or []
 
@@ -381,30 +429,18 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
         return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
 
     user_content = _build_user_content(page, text, rule_suggestions)
+    max_output_tokens = _findings_max_output_tokens(rule_suggestions)
 
-    try:
-        response = _client().chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.2,
-            timeout=timeout,
-            max_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
-        )
-    except Exception as e:  # noqa: BLE001 - 원인 그대로 사용자에게 보여줌
-        raise LLMReviewError(f"LLM 호출에 실패했습니다: {e}") from e
-
-    choice = response.choices[0]
-    if getattr(choice, "finish_reason", None) == "length":
-        raise LLMReviewError(
-            f"LLM 응답이 최대 토큰({DEFAULT_MAX_OUTPUT_TOKENS}) 제한으로 중간에 잘렸습니다. "
-            "규칙 위반 수나 발견된 문제가 유난히 많은 문서일 수 있습니다."
-        )
-
-    raw = choice.message.content or ""
-    data = _parse_llm_response(raw)
+    data: dict | None = None
+    last_error: LLMReviewError | None = None
+    for _attempt in range(FINDINGS_MAX_ATTEMPTS):
+        try:
+            data = _run_findings_call(model, timeout, user_content, max_output_tokens)
+            break
+        except LLMReviewError as e:
+            last_error = e
+    if data is None:
+        raise last_error
 
     updated_rule_suggestions = _apply_rule_fixes(rule_suggestions, data["rule_fixes"])
     new_findings = _to_suggestions(data["new_findings"])

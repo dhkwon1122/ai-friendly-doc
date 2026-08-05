@@ -429,6 +429,71 @@ def test_review_with_llm_keeps_suggestions_when_revision_call_raises(monkeypatch
     assert call_count["n"] == 2
 
 
+def test_review_with_llm_retries_findings_call_once_after_transient_failure(monkeypatch):
+    """findings 호출이 첫 시도에 실패해도(타임아웃 등), 재시도해서 성공하면
+    결과가 정상적으로 반환돼야 한다 - 이게 "같은 문서인데 가끔 확인 불가로
+    나온다"는 플레이키니스를 줄이는 핵심 메커니즘이다."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+
+    call_count = {"n": 0}
+
+    class _FlakyThenOkClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    call_count["n"] += 1
+                    if call_count["n"] == 1:
+                        raise TimeoutError("일시적인 타임아웃")
+                    return _FakeResponse('{"new_findings": [], "rule_fixes": []}')
+
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: _FlakyThenOkClient())
+
+    result = review_with_llm(make_page())
+
+    assert result.suggestions == []
+    # findings 재시도(2회) + revision 호출(1회) = 3번 호출됐어야 함
+    assert call_count["n"] == 3
+
+
+def test_review_with_llm_gives_up_after_max_findings_attempts(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    fake_client = _FakeClient(exc=TimeoutError("계속 타임아웃"))
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    with pytest.raises(LLMReviewError):
+        review_with_llm(make_page())
+
+    from ai_friendly_doc.llm_review import FINDINGS_MAX_ATTEMPTS
+
+    assert len(fake_client.chat.completions.calls) == FINDINGS_MAX_ATTEMPTS
+
+
+def test_findings_max_output_tokens_scales_with_rule_violation_count():
+    from ai_friendly_doc.llm_review import DEFAULT_MAX_OUTPUT_TOKENS, _findings_max_output_tokens
+
+    few = _findings_max_output_tokens([make_rule_suggestion()])
+    many = _findings_max_output_tokens([make_rule_suggestion() for _ in range(30)])
+
+    assert few >= DEFAULT_MAX_OUTPUT_TOKENS
+    assert many > few  # 위반 항목이 많으면 예산도 더 커야 함
+
+
+def test_review_with_llm_uses_zero_temperature_for_determinism(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    fake_client = _FakeClient(responses=[('{"new_findings": [], "rule_fixes": []}', "stop"), ("x", "stop")])
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    review_with_llm(make_page())
+
+    findings_call, revision_call = fake_client.chat.completions.calls
+    assert findings_call["temperature"] == 0.0
+    assert revision_call["temperature"] == 0.0
+
+
 def test_system_prompt_excludes_html_only_visible_guidelines():
     from ai_friendly_doc.llm_review import SYSTEM_PROMPT
 
