@@ -35,6 +35,23 @@ if not session_secret:
 app.add_middleware(SessionMiddleware, secret_key=session_secret, https_only=False)
 
 
+def _fixed_base_url() -> str:
+    """조직 전체가 공유하는 배포 단위 설정. 여러 Confluence 인스턴스가 섞여
+    저장되는 걸 막고(다른 앱과 confluence_credentials 테이블을 공유하기도
+    쉽도록) 사용자가 직접 입력하지 않고 .env의 CONFLUENCE_BASE_URL을 그대로
+    쓴다 - 그래서 웹 UI에서는 필수 설정이다."""
+    value = (os.environ.get("CONFLUENCE_BASE_URL") or "").strip().rstrip("/")
+    if not value:
+        raise RuntimeError(
+            "CONFLUENCE_BASE_URL 환경변수가 설정되지 않았습니다. 웹 UI는 사용자가 "
+            "Base URL을 직접 입력하지 않으므로 .env에서 반드시 지정해야 합니다."
+        )
+    return value
+
+
+_fixed_base_url()  # 필수 설정이 빠졌으면 요청을 받기 전에(기동 시점에) 바로 실패시킨다.
+
+
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
@@ -105,13 +122,6 @@ def logout(request: Request):
 # ---- Confluence 연동 정보 설정 ---------------------------------------------
 
 
-def _fixed_base_url() -> str | None:
-    """조직 전체가 공유하는 단일 Confluence 인스턴스면 .env에 고정해둘 수 있다.
-    설정돼 있으면 사용자는 base_url을 입력할 필요 없이 인증 정보만 입력한다."""
-    value = (os.environ.get("CONFLUENCE_BASE_URL") or "").strip().rstrip("/")
-    return value or None
-
-
 def _verify_ssl() -> bool:
     """사내 Confluence가 자체 서명 인증서를 쓰면 .env에 CONFLUENCE_VERIFY_SSL=false로
     끌 수 있다. base_url과 마찬가지로 서버 전체에 적용되는 배포 단위 설정이다."""
@@ -137,7 +147,6 @@ def settings_form(request: Request):
 @app.post("/settings", response_class=HTMLResponse)
 def settings_submit(
     request: Request,
-    base_url: str = Form(""),
     auth_type: str = Form(...),
     email: str = Form(""),
     api_token: str = Form(""),
@@ -147,10 +156,9 @@ def settings_submit(
         return RedirectResponse("/login", status_code=303)
 
     fixed_base_url = _fixed_base_url()
-    base_url = fixed_base_url or base_url.strip().rstrip("/")
     existing = db.get_credentials(user.id)
 
-    if not base_url or auth_type not in ("basic", "bearer", "userpass"):
+    if auth_type not in ("basic", "bearer", "userpass"):
         return render(
             request, "settings.html", creds=existing, error="필수 값을 확인하세요.", fixed_base_url=fixed_base_url
         )
@@ -178,7 +186,7 @@ def settings_submit(
 
     db.save_credentials(
         user_id=user.id,
-        base_url=base_url,
+        base_url=fixed_base_url,
         auth_type=auth_type,
         email=email.strip() or None,
         encrypted_token=token_to_store,
@@ -200,7 +208,7 @@ def _build_client(user: db.User) -> ConfluenceClient:
     if not creds:
         raise SecurityConfigError("먼저 설정 페이지에서 Confluence 연동 정보를 입력하세요.")
     config = ConfluenceConfig(
-        base_url=_fixed_base_url() or creds.base_url,
+        base_url=_fixed_base_url(),
         auth_type=creds.auth_type,
         email=creds.email,
         api_token=decrypt_token(creds.encrypted_token),

@@ -11,15 +11,8 @@
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 {% if saved %}<p class="notice">저장되었습니다.</p>{% endif %}
 <form method="post" action="/settings">
-  {% if fixed_base_url %}
   <label>Confluence Base URL (관리자가 고정, 수정 불가)</label>
   <input type="text" value="{{ fixed_base_url }}" disabled>
-  <input type="hidden" name="base_url" value="{{ fixed_base_url }}">
-  {% else %}
-  <label>Confluence Base URL</label>
-  <input type="text" name="base_url" placeholder="https://your-domain.atlassian.net/wiki"
-         value="{{ creds.base_url if creds else '' }}" required>
-  {% endif %}
 
   <label>인증 방식</label>
   <select name="auth_type">
