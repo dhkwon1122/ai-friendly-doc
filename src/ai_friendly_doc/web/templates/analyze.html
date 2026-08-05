@@ -61,7 +61,12 @@
         {% if r.revised_document %}
         <pre>{{ r.revised_document }}</pre>
         {% else %}
-        <p class="hint">LLM 검토가 설정되어 있지 않거나 이번 검토에서 실패해 수정본을 만들지 못했습니다. 설정 페이지에서 LLM 연동 상태를 확인하세요.</p>
+          {% set revision_error = (r.suggestions | selectattr("rule_id", "equalto", "llm-revision-error") | list | first) %}
+          {% if revision_error %}
+          <p class="hint">수정본을 만들지 못했습니다: {{ revision_error.suggestion }}</p>
+          {% else %}
+          <p class="hint">LLM 검토가 설정되어 있지 않아 수정본을 만들지 못했습니다. 설정 페이지에서 LLM 연동 상태를 확인하세요.</p>
+          {% endif %}
         {% endif %}
       </div>
     </div>
