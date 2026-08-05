@@ -401,6 +401,9 @@ def test_review_with_llm_keeps_suggestions_when_revision_call_truncated(monkeypa
 
     assert result.suggestions[0].suggestion == 'alt="배포 아키텍처 다이어그램"'
     assert result.revised_document is None
+    # 실패 사유가 리포트에 남아야 서버 로그 없이도 원인을 알 수 있다.
+    error_entry = next(s for s in result.suggestions if s.rule_id == "llm-revision-error")
+    assert "잘렸습니다" in error_entry.suggestion
 
 
 def test_review_with_llm_keeps_suggestions_when_revision_call_raises(monkeypatch):
@@ -424,9 +427,10 @@ def test_review_with_llm_keeps_suggestions_when_revision_call_raises(monkeypatch
 
     result = review_with_llm(make_page("<p>본문</p>"))
 
-    assert result.suggestions == []
     assert result.revised_document is None
     assert call_count["n"] == 2
+    error_entry = next(s for s in result.suggestions if s.rule_id == "llm-revision-error")
+    assert "연결 실패" in error_entry.suggestion
 
 
 def test_review_with_llm_retries_findings_call_once_after_transient_failure(monkeypatch):

@@ -17,7 +17,11 @@
 망가지기 쉬운데, 한 호출에 다 묶으면 3번이 실패할 때마다 이미 성공한
 1·2번 결과까지 통째로 날아간다. 그래서 3번은 별도 호출로 분리해 최선을
 다해 시도하되(best-effort), 실패해도 1·2번 결과(suggestions)는 그대로
-살리고 revised_document만 None으로 둔다.
+살리고 revised_document만 None으로 둔다. 다만 실패 사실 자체는 숨기지
+않는다 - 실패 사유를 `llm-revision-error` 항목으로 suggestions에 추가하고
+서버 로그에도 남겨서(logging.warning), "왜 수정본이 안 만들어졌는지"를
+리포트만 보고도 알 수 있게 한다 (예: max_tokens가 모델의 실제 최대
+컨텍스트 길이를 넘어서 서버가 요청 자체를 거부한 경우 등).
 
 1·2번 호출은 실패하면(타임아웃, 응답 잘림, 깨진 JSON 등) 규칙 기반
 가이드라인 점수 계산에서 LLM 전용 항목들이 전부 "확인 불가"로 표시된다
@@ -37,6 +41,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 
 from bs4 import BeautifulSoup, Tag
@@ -45,6 +50,8 @@ from openai import OpenAI
 from .confluence_client import ConfluencePage
 from .guidelines import GUIDELINES, GUIDELINES_BY_ID
 from .rules import Severity, Suggestion
+
+_logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_INPUT_CHARS = 12000
 DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -357,14 +364,20 @@ def _revision_max_output_tokens(text: str) -> int:
 
 def _generate_revised_document(
     page: ConfluencePage, text: str, suggestions: list[Suggestion], model: str, timeout: float
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """문서 전체 수정본을 만들어본다 (best-effort).
 
     이 호출은 출력이 길어서(문서 전체를 거의 그대로 다시 써야 함) 소형
-    모델일수록 중간에 잘리거나 실패하기 쉽다. new_findings/rule_fixes(더
-    짧고 안정적으로 성공하는 부분)와 분리된 별도 호출로 두고, 실패해도
-    예외를 던지지 않고 None을 반환한다 - 그래야 이 부분만 실패했을 때도
-    호출자가 이미 성공한 결과를 잃지 않는다.
+    모델일수록 중간에 잘리거나 실패하기 쉽고, max_tokens를 모델의 실제 최대
+    컨텍스트 길이보다 크게 잡으면 서버가 요청 자체를 거부하기도 한다.
+    new_findings/rule_fixes(더 짧고 안정적으로 성공하는 부분)와 분리된 별도
+    호출로 두고, 실패해도 예외를 던지지 않는다 - 그래야 이 부분만 실패했을
+    때도 호출자가 이미 성공한 결과를 잃지 않는다.
+
+    (revised_document, 실패 사유) 튜플을 반환한다. 성공하면 실패 사유는 None,
+    실패하면 revised_document가 None이고 실패 사유에 원인 문자열이 담긴다 -
+    호출자가 이 사유를 리포트에 남겨서, "왜 수정본이 안 만들어졌는지"를 서버
+    로그를 안 봐도 알 수 있게 한다.
     """
     max_output_tokens = _revision_max_output_tokens(text)
     user_content = _build_revision_user_content(page, text, suggestions)
@@ -380,15 +393,23 @@ def _generate_revised_document(
             timeout=timeout,
             max_tokens=max_output_tokens,
         )
-    except Exception:  # noqa: BLE001 - best-effort, 실패해도 나머지 결과는 살림
-        return None
+    except Exception as e:  # noqa: BLE001 - best-effort, 실패해도 나머지 결과는 살림
+        _logger.warning("수정본 생성 호출 실패 (max_tokens=%s): %s", max_output_tokens, e)
+        return None, f"LLM 호출에 실패했습니다: {e}"
 
     choice = response.choices[0]
     if getattr(choice, "finish_reason", None) == "length":
-        return None
+        error = (
+            f"응답이 최대 토큰({max_output_tokens}) 제한으로 중간에 잘렸습니다. "
+            "LLM_MAX_OUTPUT_TOKENS를 모델의 최대 컨텍스트 길이보다 작게 조정해보세요."
+        )
+        _logger.warning("수정본 생성 응답 잘림 (max_tokens=%s)", max_output_tokens)
+        return None, error
 
     revised = (choice.message.content or "").strip()
-    return revised or None
+    if not revised:
+        return None, "LLM이 빈 응답을 반환했습니다."
+    return revised, None
 
 
 def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> LLMReviewResult:
@@ -402,7 +423,9 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
     이어서 별도 호출로 문서 전체를 다시 쓴 수정본(revised_document)도 만들어
     본다. 이 두 번째 호출은 출력이 길어 실패하기 쉬우므로 best-effort로
     처리한다 - 실패해도 예외를 던지지 않고 revised_document만 None으로 둔다
-    (첫 번째 호출에서 이미 얻은 suggestions는 그대로 유지된다).
+    (첫 번째 호출에서 이미 얻은 suggestions는 그대로 유지된다). 대신 실패
+    사유를 `llm-revision-error` rule_id를 가진 info 등급 suggestion으로
+    추가해서, 리포트에서 왜 수정본이 없는지 바로 확인할 수 있게 한다.
 
     LLM_BASE_URL이 없으면 rule_suggestions를 그대로(원래 조언 형태로) 담고
     revised_document는 None인 결과를 반환한다. 그 외 설정 누락이나 첫 번째
@@ -446,6 +469,16 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
     new_findings = _to_suggestions(data["new_findings"])
     all_suggestions = updated_rule_suggestions + new_findings
 
-    revised_document = _generate_revised_document(page, text, all_suggestions, model, timeout)
+    revised_document, revision_error = _generate_revised_document(page, text, all_suggestions, model, timeout)
+    if revision_error:
+        all_suggestions = all_suggestions + [
+            Suggestion(
+                rule_id="llm-revision-error",
+                severity=Severity.INFO,
+                location="문서 전체",
+                message="문서 전체 수정본을 만들지 못했습니다.",
+                suggestion=revision_error,
+            )
+        ]
 
     return LLMReviewResult(suggestions=all_suggestions, revised_document=revised_document)
