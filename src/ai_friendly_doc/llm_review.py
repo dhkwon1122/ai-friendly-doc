@@ -353,13 +353,21 @@ def _build_revision_user_content(page: ConfluencePage, text: str, suggestions: l
 
 
 def _revision_max_output_tokens(text: str) -> int:
-    max_output_tokens_raw = os.environ.get("LLM_MAX_OUTPUT_TOKENS")
-    if max_output_tokens_raw:
-        return int(max_output_tokens_raw)
     # 문서 전체를 거의 그대로(+ 수정 반영) 다시 써야 해서, 출력 길이가 입력
     # 길이에 비례한다. 한글은 토큰당 글자 수가 영어보다 적어(토큰을 더 많이
     # 씀) 글자당 2토큰으로 넉넉하게 잡는다.
-    return max(DEFAULT_MAX_OUTPUT_TOKENS, len(text) * 2 + 1024)
+    computed = max(DEFAULT_MAX_OUTPUT_TOKENS, len(text) * 2 + 1024)
+
+    max_output_tokens_raw = os.environ.get("LLM_MAX_OUTPUT_TOKENS")
+    if not max_output_tokens_raw:
+        return computed
+
+    # LLM_MAX_OUTPUT_TOKENS를 지정했으면 "최소 이 정도는 보장"하는 하한으로
+    # 다룬다 - 문서 길이 기반 추정치가 이보다 크면 그쪽을 쓴다. .env.example의
+    # 예시 값(4096)을 그대로 켜뒀다가, 그보다 긴 문서에서 또 잘리는 걸 막기
+    # 위함이다. 반대로 더 큰 값을 명시하면(모델이 감당 가능하다고 알고 있는
+    # 경우) 그 값이 여전히 우선한다.
+    return max(int(max_output_tokens_raw), computed)
 
 
 def _generate_revised_document(
