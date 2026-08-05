@@ -68,6 +68,7 @@ ai-friendly-doc --space-key ENG -o report.md
 cp .env.example .env
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"  # FERNET_KEY에 채워넣기
 python -c "import secrets; print(secrets.token_hex(32))"                                    # SESSION_SECRET에 채워넣기
+# CONFLUENCE_BASE_URL도 반드시 채워야 함 (아래 참고, 안 채우면 기동 자체가 실패함)
 
 ai-friendly-doc-web
 # 또는: python -m ai_friendly_doc.web
@@ -76,15 +77,20 @@ ai-friendly-doc-web
 기본적으로 http://127.0.0.1:12345 에서 뜹니다. `HOST`/`PORT` 환경변수로 바인딩을
 바꿀 수 있습니다(사내망에 공개하려면 `HOST=0.0.0.0`).
 
+웹 UI는 `SESSION_SECRET`과 마찬가지로 `.env`의 `CONFLUENCE_BASE_URL`이 **필수**입니다
+(설정 안 하면 기동 시점에 바로 에러를 내고 멈춥니다). 사용자가 각자 다른 Base
+URL을 직접 입력하는 경로는 없고, 모든 사용자에게 이 값 하나로 고정 적용됩니다
+(`/settings` 화면에는 읽기 전용으로만 표시됨) - 여러 인스턴스가 섞여 저장되는
+걸 막고, DB의 `confluence_credentials` 테이블을 다른 앱과 공유하기도 쉽게 하기
+위함입니다. `CONFLUENCE_VERIFY_SSL=false`도 마찬가지로 배포 단위 설정이라
+`.env`에서만 끄면 모든 사용자에게 적용됩니다.
+
 흐름:
 1. `/register`에서 계정 생성 (아이디 + 비밀번호, bcrypt로 해시 저장)
 2. `/settings`에서 본인의 인증 방식(Cloud는 basic+이메일, Server·DC는 bearer+PAT
-   또는 userpass+계정 ID/비밀번호) / API 토큰(또는 비밀번호) 입력 → 값은 `FERNET_KEY`로
-   암호화되어 DB에 저장. Confluence Base URL은 `.env`의 `CONFLUENCE_BASE_URL`이
-   설정돼 있으면 그 값이 모든 사용자에게 고정 적용되어(입력창이 읽기 전용으로
-   표시됨) 따로 입력할 필요가 없고, 비워두면 사용자가 각자 입력한다.
-   `CONFLUENCE_VERIFY_SSL=false`도 마찬가지로 배포 단위 설정이라 `.env`에서만
-   끄면 모든 사용자에게 적용된다.
+   또는 userpass+계정 ID/비밀번호) / API 토큰(또는 비밀번호)만 입력 → 값은
+   `FERNET_KEY`로 암호화되어 DB에 저장. Confluence Base URL은 입력할 필요가
+   없습니다(위 참고).
 3. `/analyze`에서 페이지 ID(들) 또는 스페이스 키를 입력해 분석 실행 →
    결과는 화면에 바로 렌더링되고, "Markdown으로 다운로드" 버튼으로 파일도
    받을 수 있음. Write API는 여전히 호출하지 않으므로 원본 문서는 변경되지
