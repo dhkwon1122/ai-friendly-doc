@@ -362,17 +362,34 @@ def test_review_with_llm_findings_call_uses_fixed_budget_regardless_of_document_
     assert revision_call["max_tokens"] > 4096  # 수정본 호출은 문서가 길면 늘어남
 
 
-def test_review_with_llm_revision_call_respects_explicit_max_output_tokens_env(monkeypatch):
+def test_review_with_llm_revision_call_uses_larger_explicit_max_output_tokens(monkeypatch):
+    """명시적으로 지정한 값이 문서 길이 기반 추정치보다 크면 그 값을 그대로 쓴다."""
     monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
     monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
-    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "777")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "50000")
     fake_client = _FakeClient(responses=[('{"new_findings": [], "rule_fixes": []}', "stop"), ("x", "stop")])
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
 
-    review_with_llm(make_page())
+    review_with_llm(make_page())  # 아주 짧은 문서라 추정치는 4096 수준
 
     findings_call, revision_call = fake_client.chat.completions.calls
-    assert revision_call["max_tokens"] == 777
+    assert revision_call["max_tokens"] == 50000
+
+
+def test_review_with_llm_revision_call_ignores_smaller_explicit_max_output_tokens(monkeypatch):
+    """명시적으로 지정한 값이 문서 길이 기반 추정치보다 작으면(예: .env.example의
+    예시 값 4096을 그대로 켜둔 경우), 추정치 쪽을 써서 다시 잘리지 않게 한다."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "4096")
+    fake_client = _FakeClient(responses=[('{"new_findings": [], "rule_fixes": []}', "stop"), ("x", "stop")])
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    long_html = "<p>" + ("가나다라마바사아자차카타파하 " * 500) + "</p>"
+    review_with_llm(make_page(long_html))
+
+    findings_call, revision_call = fake_client.chat.completions.calls
+    assert revision_call["max_tokens"] > 4096
 
 
 def test_review_with_llm_raises_clear_error_when_findings_response_truncated(monkeypatch):
