@@ -38,7 +38,9 @@ def render_page_section(report: PageReport) -> str:
     page = report.page
     lines = [f"## {page.title}"]
     if page.web_url:
-        lines.append(f"- 원본: {page.web_url}")
+        # 마크다운 링크 문법으로 써야 렌더링됐을 때 실제로 클릭 가능한
+        # 링크가 된다 (원본 URL을 그냥 텍스트로 두면 안 눌린다).
+        lines.append(f"- 원본: [{page.web_url}]({page.web_url})")
     lines.append(f"- 페이지 ID: {page.id} / 스페이스: {page.space_key} / 버전: {page.version}")
     lines.append("")
     lines.extend(_render_guideline_checklist(report.guideline_score))
@@ -46,17 +48,29 @@ def render_page_section(report: PageReport) -> str:
     if not report.suggestions:
         lines.append("발견된 제안 사항 없음.")
         lines.append("")
-        return "\n".join(lines)
+    else:
+        ordered = sorted(report.suggestions, key=lambda s: SEVERITY_ORDER[s.severity])
+        for s in ordered:
+            lines.append(f"### [{SEVERITY_LABEL[s.severity]}] {s.location}")
+            lines.append(f"- 규칙: `{s.rule_id}`")
+            lines.append(f"- 문제: {s.message}")
+            lines.append(f"- 제안: {s.suggestion}")
+            lines.append("")
 
-    ordered = sorted(report.suggestions, key=lambda s: SEVERITY_ORDER[s.severity])
-    for s in ordered:
-        lines.append(f"### [{SEVERITY_LABEL[s.severity]}] {s.location}")
-        lines.append(f"- 규칙: `{s.rule_id}`")
-        lines.append(f"- 문제: {s.message}")
-        lines.append(f"- 제안: {s.suggestion}")
-        lines.append("")
-
+    lines.extend(_render_revision_section(report))
     return "\n".join(lines)
+
+
+def _render_revision_section(report: PageReport) -> list[str]:
+    lines = ["**최종 수정본**", ""]
+    if report.revised_document:
+        lines.append("```")
+        lines.append(report.revised_document)
+        lines.append("```")
+    else:
+        lines.append("(LLM이 설정되어 있지 않거나 수정본 생성에 실패해 만들어지지 않았습니다.)")
+    lines.append("")
+    return lines
 
 
 def render_summary_table(reports: list[PageReport]) -> str:

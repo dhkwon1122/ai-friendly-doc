@@ -35,11 +35,20 @@
 
 {% if report_html %}
 <div class="report">
-  <form method="post" action="/analyze/download">
-    <input type="hidden" name="mode" value="{{ mode }}">
-    <input type="hidden" name="value" value="{{ value }}">
-    <button class="secondary" type="submit">Markdown으로 다운로드</button>
-  </form>
+  <div class="report-actions">
+    <form method="post" action="/analyze/download">
+      <input type="hidden" name="mode" value="{{ mode }}">
+      <input type="hidden" name="value" value="{{ value }}">
+      <button class="secondary" type="submit">Markdown으로 다운로드</button>
+    </form>
+    <form method="post" action="/analyze/email" class="email-form">
+      <input type="hidden" name="mode" value="{{ mode }}">
+      <input type="hidden" name="value" value="{{ value }}">
+      <input type="email" name="email" placeholder="you@example.com" value="{{ email_sent or '' }}" required>
+      <button class="secondary" type="submit">이메일로 받기</button>
+    </form>
+  </div>
+  {% if email_sent %}<p class="notice">{{ email_sent }}(으)로 리포트를 보냈습니다.</p>{% endif %}
   {{ report_html | safe }}
 </div>
 {% endif %}
@@ -50,7 +59,10 @@
   <p class="hint">페이지별로 펼쳐서 원본 문서와 제안 사항이 반영된 수정본을 나란히 비교할 수 있습니다.</p>
   {% for r in reports %}
   <details class="doc-compare-page" {% if loop.first %}open{% endif %}>
-    <summary>{{ r.page.title }}</summary>
+    <summary>
+      {{ r.page.title }}
+      {% if r.page.web_url %}<a class="original-link" href="{{ r.page.web_url }}" target="_blank" rel="noopener">원본 열기 ↗</a>{% endif %}
+    </summary>
     <div class="doc-compare-columns">
       <div class="doc-pane">
         <h4>원본</h4>
