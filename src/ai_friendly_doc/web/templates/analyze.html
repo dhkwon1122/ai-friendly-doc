@@ -62,11 +62,14 @@
     <form method="post" action="/analyze/download" class="download-form">
       <input type="hidden" name="mode" value="{{ mode }}">
       <input type="hidden" name="value" value="{{ value }}">
+      <textarea name="report_markdown" hidden>{{ report_markdown }}</textarea>
       <button class="secondary" type="submit">Markdown으로 다운로드</button>
     </form>
     <form method="post" action="/analyze/email" class="email-form">
       <input type="hidden" name="mode" value="{{ mode }}">
       <input type="hidden" name="value" value="{{ value }}">
+      <input type="hidden" name="page_count" value="{{ reports|length if reports else 0 }}">
+      <textarea name="report_markdown" hidden>{{ report_markdown }}</textarea>
       <button class="secondary" type="submit">이메일로 받기</button>
       <span class="hint">{{ user.username }}@samsung.com로 발송됩니다</span>
     </form>

@@ -1,3 +1,5 @@
+import markdown as md
+
 from ai_friendly_doc.analyzer import PageReport
 from ai_friendly_doc.confluence_client import ConfluencePage
 from ai_friendly_doc.guidelines import score_document
@@ -53,3 +55,33 @@ def test_render_report_includes_revision_for_every_page():
     report = render_report(reports)
     assert "# 문서 A 수정본" in report
     assert report.count("최종 수정본") == 2
+
+
+def test_render_page_section_puts_revision_before_guideline_checklist():
+    # 이메일/화면에서 가장 궁금해하는 결과물(수정 제안)을 발견 사항 목록보다
+    # 먼저 볼 수 있어야 한다.
+    section = render_page_section(make_page_report(revised_document="## 수정된 문서 내용"))
+    assert section.index("최종 수정본") < section.index("핵심 가이드라인 준수")
+
+
+def test_revised_document_line_breaks_survive_markdown_to_html_conversion():
+    # report.py는 최종 수정본을 ```...``` 펜스드 코드 블록으로 감싸는데,
+    # "fenced_code" 확장 없이 markdown.markdown()을 쓰면 이 블록이 코드로
+    # 인식되지 않고 일반 문단 취급되어 내부 줄바꿈이 공백으로 뭉개진다
+    # (web/app.py에서 이메일 본문을 만들 때 실제로 겪은 문제) - 이 확장이
+    # 켜져 있으면 줄바꿈이 살아남는지 확인한다.
+    revised = "첫 번째 줄\n두 번째 줄\n세 번째 줄"
+    section = render_page_section(make_page_report(revised_document=revised))
+
+    html = md.markdown(section, extensions=["tables", "fenced_code"])
+
+    # <pre>로 감싸져야 브라우저/메일 클라이언트가 공백을 그대로 보존해서
+    # 렌더링한다(<pre>가 없으면 텍스트에 \n이 남아 있어도 화면에는 공백
+    # 하나로 뭉개져 보인다 - HTML의 기본 공백 처리 규칙 때문).
+    assert "<pre>" in html
+    assert "첫 번째 줄\n두 번째 줄\n세 번째 줄" in html
+
+    # fenced_code 없이 변환하면(회귀 방지용 대조군) <pre>로 감싸지지 않아서
+    # 실제로 표시될 때 줄바꿈이 사라진다.
+    html_without_fenced_code = md.markdown(section, extensions=["tables"])
+    assert "<pre>" not in html_without_fenced_code
