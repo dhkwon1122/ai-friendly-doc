@@ -1,9 +1,12 @@
 """분석 리포트를 사내 메일 발송 REST API로 보내는 기능 (선택).
 
 SMTP가 아니라 사내 메일 API(기본값 openapi.samsung.net)를 REST 호출로
-쓴다. 이 API는 파일 첨부를 지원하는 엔드포인트라 첨부 없이 본문만 보낼
-때도 multipart/form-data로 "mail"이라는 이름의 파트에 메일 정보를 JSON
-으로 실어 보내야 한다 - 그냥 JSON 바디로 POST하면 안 받아준다.
+쓴다. JSON을 문자열로 직렬화해서 그대로 요청 본문(body)에 담아 POST한다
+(Content-Type: application/json;charset=utf-8) - multipart/form-data가
+아니다. (참고: 처음엔 스펙 문서의 Content-Disposition 언급 때문에
+multipart로 "mail" 파트에 실어 보내도록 구현했다가 "CO400" 파라미터
+오류를 겪었다 - 실제로 성공한 참조 코드가 `data=json.dumps(payload)`로
+평문 JSON 바디를 보내는 것으로 확인되어 이 방식으로 교체했다.)
 
 MAIL_API_TOKEN이 설정된 경우에만 동작한다.
 """
@@ -66,6 +69,7 @@ def send_report_email(to_email: str, subject: str, body_html: str) -> None:
     # 키를 명시적으로 채워서 requests가 환경변수 프록시로 덮어쓰지 못하게 한다.
     no_proxy = parse_bool_env(os.environ.get("MAIL_API_NO_PROXY"), default=False)
     proxies = {"http": None, "https": None} if no_proxy else None
+    verify_ssl = parse_bool_env(os.environ.get("MAIL_API_VERIFY_SSL"), default=True)
 
     mail_payload = {
         "subject": subject,
@@ -75,10 +79,9 @@ def send_report_email(to_email: str, subject: str, body_html: str) -> None:
         "sender": {"emailAddress": sender_address},
         "recipients": [{"emailAddress": to_email, "recipientType": "TO"}],
     }
-    # 첨부 없이 본문만 보낼 때도 "mail" 파트를 실은 multipart/form-data로
-    # 보내야 한다. 한글이 섞이므로 인코딩을 명시적으로 UTF-8 바이트로
-    # 고정한다 (str로 넘기면 라이브러리가 기본 인코딩을 쓸 수 있어서 깨짐).
-    mail_part = json.dumps(mail_payload, ensure_ascii=False).encode("utf-8")
+    # 한글이 섞이므로 인코딩을 명시적으로 UTF-8 바이트로 고정한다 (str로
+    # 넘기면 라이브러리가 기본 인코딩을 쓸 수 있어서 깨질 수 있다).
+    body = json.dumps(mail_payload, ensure_ascii=False).encode("utf-8")
 
     try:
         response = requests.post(
@@ -87,10 +90,12 @@ def send_report_email(to_email: str, subject: str, body_html: str) -> None:
             headers={
                 "Authorization": f"Bearer {token}",
                 "System-ID": system_id,
+                "Content-Type": "application/json;charset=utf-8",
             },
-            files={"mail": (None, mail_part, "application/json;charset=utf-8")},
+            data=body,
             timeout=DEFAULT_TIMEOUT_SECONDS,
             proxies=proxies,
+            verify=verify_ssl,
         )
         response.raise_for_status()
     except requests.HTTPError as e:
