@@ -34,14 +34,9 @@ class ConfluenceClient:
             # 사내 서버가 자체 서명 인증서를 쓰는 경우 검증을 끄되, urllib3의
             # InsecureRequestWarning이 요청마다 쏟아지는 것은 막는다.
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        if config.auth_type in ("basic", "userpass"):
-            # basic: Cloud (이메일 + API 토큰), userpass: Server/DC (계정 ID + 비밀번호)
-            # 둘 다 HTTP Basic Auth로 (email, api_token) 튜플을 보내는 것은 동일함.
-            self._session.auth = (config.email, config.api_token)
-        elif config.auth_type == "bearer":
-            self._session.headers["Authorization"] = f"Bearer {config.api_token}"
-        else:
-            raise ValueError(f"지원하지 않는 CONFLUENCE_AUTH_TYPE: {config.auth_type}")
+        # 계정 ID + 비밀번호로 HTTP Basic Auth. API 토큰/PAT 기반 인증은
+        # 지원하지 않는다 (사내 환경에서 토큰 방식이 막혀 있어 ID/비밀번호만 씀).
+        self._session.auth = (config.email, config.api_token)
 
     def get_page(self, page_id: str) -> ConfluencePage:
         resp = self._session.get(

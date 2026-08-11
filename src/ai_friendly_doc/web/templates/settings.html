@@ -4,8 +4,7 @@
 <h1>Confluence 연동 설정</h1>
 <p class="hint">
   입력한 값은 서버에 암호화되어 저장되며, 본인 계정으로 로그인했을 때만 사용됩니다.
-  Cloud는 <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener">API 토큰</a> +
-  이메일(basic), Server/Data Center는 Personal Access Token(bearer) 또는 계정 ID + 비밀번호(userpass)를 사용하세요.
+  Confluence 계정 ID와 비밀번호를 그대로 입력하세요 (API 토큰/PAT은 지원하지 않습니다).
 </p>
 {% if onboarding %}<p class="info">분석을 시작하려면 먼저 Confluence 연동 정보를 입력해주세요.</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -14,19 +13,11 @@
   <label>Confluence Base URL (관리자가 고정, 수정 불가)</label>
   <input type="text" value="{{ fixed_base_url }}" disabled>
 
-  <label>인증 방식</label>
-  <select name="auth_type">
-    <option value="basic" {% if not creds or creds.auth_type == 'basic' %}selected{% endif %}>basic (Cloud: 이메일 + API 토큰)</option>
-    <option value="bearer" {% if creds and creds.auth_type == 'bearer' %}selected{% endif %}>bearer (Server/DC: Personal Access Token)</option>
-    <option value="userpass" {% if creds and creds.auth_type == 'userpass' %}selected{% endif %}>userpass (Server/DC: 계정 ID + 비밀번호, Basic Auth)</option>
-  </select>
+  <label>계정 ID</label>
+  <input type="text" name="email" value="{{ creds.email if creds and creds.email else '' }}" placeholder="Confluence 로그인 ID">
 
-  <label>계정 ID / 이메일 (basic, userpass 인증인 경우 필수)</label>
-  <input type="text" name="email" value="{{ creds.email if creds and creds.email else '' }}"
-         placeholder="Cloud면 이메일, Server/DC면 계정 ID">
-
-  <label>API 토큰 / 비밀번호{% if creds %} (변경할 때만 입력, 비워두면 기존 값 유지){% endif %}</label>
-  <input type="password" name="api_token" placeholder="{% if creds %}저장된 값 있음{% else %}API 토큰 또는 비밀번호{% endif %}">
+  <label>비밀번호{% if creds %} (변경할 때만 입력, 비워두면 기존 값 유지){% endif %}</label>
+  <input type="password" name="api_token" placeholder="{% if creds %}저장된 값 있음{% else %}Confluence 비밀번호{% endif %}">
 
   <button type="submit">저장</button>
 </form>

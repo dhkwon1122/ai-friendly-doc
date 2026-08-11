@@ -27,15 +27,10 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-- **Confluence Cloud**: `CONFLUENCE_AUTH_TYPE=basic` + `CONFLUENCE_EMAIL` +
-  Atlassian API 토큰(`CONFLUENCE_API_TOKEN`).
-  토큰 발급: https://id.atlassian.com/manage-profile/security/api-tokens
-- **Confluence Server/Data Center (PAT 사용 가능한 경우)**: `CONFLUENCE_AUTH_TYPE=bearer` +
-  Personal Access Token(`CONFLUENCE_API_TOKEN`).
-- **Confluence Server/Data Center (PAT 발급이 안 되거나 안 쓰는 경우)**:
-  `CONFLUENCE_AUTH_TYPE=userpass` + 계정 ID(`CONFLUENCE_EMAIL`) + 비밀번호(`CONFLUENCE_API_TOKEN`).
-  내부적으로 basic과 동일하게 HTTP Basic Auth로 전송되며, 계정 ID는 이메일 형식이
-  아니어도 된다.
+계정 ID(`CONFLUENCE_EMAIL`) + 비밀번호(`CONFLUENCE_API_TOKEN`)로 HTTP Basic
+Auth만 지원합니다 (API 토큰/Personal Access Token 인증은 지원하지 않습니다
+- 사내 환경에서 토큰 방식 접근이 막혀 있는 경우가 있어 뺐습니다). 계정 ID는
+이메일 형식이 아니어도 됩니다(예: 사내 로그인 ID).
 
 `CONFLUENCE_BASE_URL`은 Cloud 기준 `https://<domain>.atlassian.net/wiki` 형태입니다.
 
@@ -87,10 +82,9 @@ URL을 직접 입력하는 경로는 없고, 모든 사용자에게 이 값 하�
 
 흐름:
 1. `/register`에서 계정 생성 (아이디 + 비밀번호, bcrypt로 해시 저장)
-2. `/settings`에서 본인의 인증 방식(Cloud는 basic+이메일, Server·DC는 bearer+PAT
-   또는 userpass+계정 ID/비밀번호) / API 토큰(또는 비밀번호)만 입력 → 값은
-   `FERNET_KEY`로 암호화되어 DB에 저장. Confluence Base URL은 입력할 필요가
-   없습니다(위 참고).
+2. `/settings`에서 본인의 Confluence 계정 ID + 비밀번호만 입력 → 값은
+   `FERNET_KEY`로 암호화되어 DB에 저장. API 토큰/PAT 인증은 지원하지
+   않습니다(위 참고). Confluence Base URL은 입력할 필요가 없습니다(위 참고).
 3. `/analyze`에서 페이지 ID(들) 또는 스페이스 키를 입력해 분석 실행 →
    결과는 화면에 바로 렌더링되고, "Markdown으로 다운로드" 버튼으로 파일도
    받을 수 있고, 이메일 주소를 입력해 "이메일로 받기"로 리포트를 메일로도

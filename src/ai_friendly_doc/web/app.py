@@ -148,7 +148,6 @@ def settings_form(request: Request):
 @app.post("/settings", response_class=HTMLResponse)
 def settings_submit(
     request: Request,
-    auth_type: str = Form(...),
     email: str = Form(""),
     api_token: str = Form(""),
 ):
@@ -159,24 +158,16 @@ def settings_submit(
     fixed_base_url = _fixed_base_url()
     existing = db.get_credentials(user.id)
 
-    if auth_type not in ("basic", "bearer", "userpass"):
+    if not email.strip():
         return render(
-            request, "settings.html", creds=existing, error="필수 값을 확인하세요.", fixed_base_url=fixed_base_url
-        )
-    if auth_type in ("basic", "userpass") and not email.strip():
-        return render(
-            request,
-            "settings.html",
-            creds=existing,
-            error="계정 ID/이메일이 필요합니다.",
-            fixed_base_url=fixed_base_url,
+            request, "settings.html", creds=existing, error="계정 ID를 입력하세요.", fixed_base_url=fixed_base_url
         )
     if not api_token and not existing:
         return render(
             request,
             "settings.html",
             creds=existing,
-            error="API 토큰/비밀번호를 입력하세요.",
+            error="비밀번호를 입력하세요.",
             fixed_base_url=fixed_base_url,
         )
 
@@ -188,7 +179,9 @@ def settings_submit(
     db.save_credentials(
         user_id=user.id,
         base_url=fixed_base_url,
-        auth_type=auth_type,
+        # 토큰/PAT 인증은 지원하지 않고 계정 ID + 비밀번호(Basic Auth)만 쓰므로
+        # 값은 항상 고정. DB 컬럼 자체는 스키마 변경(마이그레이션) 없이 그대로 둔다.
+        auth_type="userpass",
         email=email.strip() or None,
         encrypted_token=token_to_store,
     )
@@ -210,7 +203,6 @@ def _build_client(user: db.User) -> ConfluenceClient:
         raise SecurityConfigError("먼저 설정 페이지에서 Confluence 연동 정보를 입력하세요.")
     config = ConfluenceConfig(
         base_url=_fixed_base_url(),
-        auth_type=creds.auth_type,
         email=creds.email,
         api_token=decrypt_token(creds.encrypted_token),
         verify_ssl=_verify_ssl(),
