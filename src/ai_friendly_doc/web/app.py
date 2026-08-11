@@ -17,6 +17,7 @@ from ..analyzer import analyze_page
 from ..config import ConfluenceConfig, parse_bool_env
 from ..confluence_client import ConfluenceClient
 from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES
+from ..llm_review import storage_html_to_plain_text
 from ..report import render_report
 from . import db
 from .mailer import MailConfigError, send_report_email
@@ -205,17 +206,16 @@ def _build_client(user: db.User) -> ConfluenceClient:
     return ConfluenceClient(config)
 
 
-def _run_analysis(user: db.User, mode: str, value: str):
+def _fetch_pages(user: db.User, mode: str, value: str):
     client = _build_client(user)
-    reports = []
     if mode == "page_ids":
         page_ids = [p.strip() for p in value.replace(",", "\n").splitlines() if p.strip()]
-        for page_id in page_ids:
-            reports.append(analyze_page(client.get_page(page_id)))
-    else:
-        for page in client.iter_space_pages(value.strip()):
-            reports.append(analyze_page(page))
-    return reports
+        return [client.get_page(page_id) for page_id in page_ids]
+    return list(client.iter_space_pages(value.strip()))
+
+
+def _run_analysis(user: db.User, mode: str, value: str):
+    return [analyze_page(page) for page in _fetch_pages(user, mode, value)]
 
 
 @app.get("/analyze", response_class=HTMLResponse)
@@ -226,6 +226,48 @@ def analyze_form(request: Request):
     if not db.get_credentials(user.id):
         return RedirectResponse("/settings?onboarding=1", status_code=303)
     return render(request, "analyze.html", core_guidelines=CORE_GUIDELINES, extra_guidelines=EXTRA_GUIDELINES)
+
+
+@app.post("/analyze/fetch", response_class=HTMLResponse)
+def analyze_fetch(request: Request, mode: str = Form(...), value: str = Form(...)):
+    """Confluence 조회(빠름)와 AI 분석(규칙 검사 + LLM 검토, 느림)을 분리한 1단계.
+
+    분석에 시간이 오래 걸린다는 피드백을 반영해, 우선 원본 문서만 빠르게
+    가져와 보여주고, AI 분석은 사용자가 원할 때 별도 버튼으로 실행하게
+    한다(/analyze POST가 2단계).
+    """
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    guideline_context = {"core_guidelines": CORE_GUIDELINES, "extra_guidelines": EXTRA_GUIDELINES}
+
+    try:
+        pages = _fetch_pages(user, mode, value)
+    except SecurityConfigError as e:
+        return render(request, "analyze.html", error=str(e), mode=mode, value=value, **guideline_context)
+    except Exception as e:  # noqa: BLE001 - 사용자에게 원인 표시
+        return render(
+            request, "analyze.html", error=f"Confluence 조회 중 오류: {e}", mode=mode, value=value, **guideline_context
+        )
+
+    if not pages:
+        return render(
+            request,
+            "analyze.html",
+            error="조회된 페이지가 없습니다.",
+            mode=mode,
+            value=value,
+            **guideline_context,
+        )
+
+    fetched_pages = [
+        {"page": page, "original_document": storage_html_to_plain_text(page.storage_html, max_chars=None)}
+        for page in pages
+    ]
+    return render(
+        request, "analyze.html", mode=mode, value=value, fetched_pages=fetched_pages, **guideline_context
+    )
 
 
 @app.post("/analyze", response_class=HTMLResponse)
