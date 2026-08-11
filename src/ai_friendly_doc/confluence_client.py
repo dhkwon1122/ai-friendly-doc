@@ -90,15 +90,23 @@ class ConfluenceClient:
         사유(예: "IP not allowed", "User-Agent not permitted" 등)가 있는
         경우가 많아서, 있으면 에러 메시지에 그대로 붙여준다 - 서버 로그를
         따로 안 봐도 사용자가 원인을 바로 알 수 있도록.
+
+        403이 "자격증명은 맞는데 이 앱만 막힘"인지 "저장된 계정 ID/비밀번호
+        자체가 기대와 다름"(예: 인증 방식 단순화 이전에 저장해둔 값을
+        재저장하지 않고 그대로 쓰는 경우)인지 헷갈리기 쉬워서, 실제로 어떤
+        base_url/계정 ID로 요청했는지도 같이 보여준다 - 비밀번호는 당연히
+        포함하지 않는다.
         """
         try:
             resp.raise_for_status()
         except requests.HTTPError as e:
             body_preview = (resp.text or "").strip()[:500]
-            _logger.warning("Confluence 요청 실패: %s | 응답 본문: %s", e, body_preview)
+            context = f"(요청 계정: {self._config.email!r}, base_url: {self._config.base_url!r})"
+            _logger.warning("Confluence 요청 실패: %s %s | 응답 본문: %s", e, context, body_preview)
+            message = f"{e} {context}"
             if body_preview:
-                raise requests.HTTPError(f"{e} | 응답 본문: {body_preview}", response=resp) from e
-            raise
+                message += f" | 응답 본문: {body_preview}"
+            raise requests.HTTPError(message, response=resp) from e
 
     def _to_page(self, raw: dict) -> ConfluencePage:
         page_id = raw["id"]

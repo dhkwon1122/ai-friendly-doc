@@ -95,6 +95,18 @@ def test_get_page_error_without_body_falls_back_to_plain_message():
         client.get_page("123")
 
 
+def test_get_page_error_includes_account_and_base_url_for_diagnosis():
+    # "인증 방식 문제가 아닌데도 403"이 재현될 때, 실제로 어떤 계정 ID/base_url로
+    # 요청했는지가 에러에 그대로 보여야 - 예를 들어 인증 방식 단순화 이전에
+    # 저장해둔 값을 재저장하지 않고 그대로 쓰고 있어서 기대와 다른 계정으로
+    # 요청되고 있는 경우를 사용자가 바로 알아챌 수 있다.
+    fake_response = _FakeResponse(status_code=403, text="")
+    client = ConfluenceClient(make_config(email="hong.gildong"), session=_FakeSession(fake_response))
+
+    with pytest.raises(requests.HTTPError, match=r"요청 계정: 'hong\.gildong'"):
+        client.get_page("123")
+
+
 def test_iter_space_pages_error_includes_response_body_for_diagnosis():
     fake_response = _FakeResponse(status_code=403, text="Blocked by WAF: IP not allowed")
     client = ConfluenceClient(make_config(), session=_FakeSession(fake_response))
