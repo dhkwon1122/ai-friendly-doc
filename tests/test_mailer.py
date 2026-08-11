@@ -51,18 +51,23 @@ class _FakeResponse:
         return self._json_body
 
 
-def test_send_report_email_posts_multipart_mail_part(monkeypatch):
+def test_send_report_email_posts_plain_json_body(monkeypatch):
+    # 처음엔 스펙 문서 때문에 multipart/form-data로 구현했다가 "CO400" 파라미터
+    # 오류를 겪었다 - 실제로 성공한 참조 코드(requests.post(url, headers=header,
+    # data=json.dumps(payload), ...))를 확인해보니 files가 아니라 JSON 문자열을
+    # 그대로 body(data=)에 담아 보내는 방식이었다. 그 형태를 그대로 검증한다.
     _set_full_config(monkeypatch, MAIL_API_SENDER_ADDRESS="bot@example.com")
 
     captured = {}
 
-    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
+    def _fake_post(url, params=None, headers=None, data=None, timeout=None, proxies=None, verify=None):
         captured["url"] = url
         captured["params"] = params
         captured["headers"] = headers
-        captured["files"] = files
+        captured["data"] = data
         captured["timeout"] = timeout
         captured["proxies"] = proxies
+        captured["verify"] = verify
         return _FakeResponse()
 
     monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _fake_post)
@@ -73,12 +78,13 @@ def test_send_report_email_posts_multipart_mail_part(monkeypatch):
     assert captured["params"] == {"userID": "user-456"}
     assert captured["headers"]["Authorization"] == "Bearer test-token"
     assert captured["headers"]["System-ID"] == "sys-123"
+    assert captured["headers"]["Content-Type"] == "application/json;charset=utf-8"
     assert captured["proxies"] is None  # MAIL_API_NO_PROXY 미설정 시 기본 동작(환경변수 프록시를 따름) 유지
+    assert captured["verify"] is True  # MAIL_API_VERIFY_SSL 미설정 시 기본값
 
-    filename, content, content_type = captured["files"]["mail"]
-    assert filename is None
-    assert content_type == "application/json;charset=utf-8"
-    payload = json.loads(content.decode("utf-8"))
+    # multipart가 아니라 순수 JSON 바이트 문자열이 그대로 body에 실려야 한다.
+    assert isinstance(captured["data"], bytes)
+    payload = json.loads(captured["data"].decode("utf-8"))
     assert payload["subject"] == "분석 리포트"
     assert payload["contents"] == "<p>본문 내용</p>"
     assert payload["contentType"] == "html"
@@ -90,13 +96,10 @@ def test_send_report_email_posts_multipart_mail_part(monkeypatch):
 def test_send_report_email_defaults_sender_to_user_id(monkeypatch):
     _set_full_config(monkeypatch, MAIL_API_SENDER_ADDRESS=None)
 
-    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
-        return _FakeResponse()
-
     captured_payload = {}
 
-    def _capturing_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
-        captured_payload["payload"] = json.loads(files["mail"][1].decode("utf-8"))
+    def _capturing_post(url, params=None, headers=None, data=None, timeout=None, proxies=None, verify=None):
+        captured_payload["payload"] = json.loads(data.decode("utf-8"))
         return _FakeResponse()
 
     monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _capturing_post)
@@ -159,7 +162,7 @@ def test_send_report_email_strips_whitespace_from_env_values(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
+    def _fake_post(url, params=None, headers=None, data=None, timeout=None, proxies=None, verify=None):
         captured["params"] = params
         captured["headers"] = headers
         return _FakeResponse()
@@ -181,7 +184,7 @@ def test_send_report_email_no_proxy_forces_proxies_none(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
+    def _fake_post(url, params=None, headers=None, data=None, timeout=None, proxies=None, verify=None):
         captured["proxies"] = proxies
         return _FakeResponse()
 
@@ -197,7 +200,7 @@ def test_send_report_email_no_proxy_false_keeps_default_behavior(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
+    def _fake_post(url, params=None, headers=None, data=None, timeout=None, proxies=None, verify=None):
         captured["proxies"] = proxies
         return _FakeResponse()
 
@@ -208,11 +211,30 @@ def test_send_report_email_no_proxy_false_keeps_default_behavior(monkeypatch):
     assert captured["proxies"] is None
 
 
+def test_send_report_email_verify_ssl_can_be_disabled(monkeypatch):
+    # 성공한 참조 코드는 verify=False로 호출한다 - 사내 자체 서명 인증서
+    # 환경에서 TLS 검증이 실패하는 경우를 위해 이 앱도 지원해야 한다.
+    _set_full_config(monkeypatch, MAIL_API_VERIFY_SSL="false")
+
+    captured = {}
+
+    def _fake_post(url, params=None, headers=None, data=None, timeout=None, proxies=None, verify=None):
+        captured["verify"] = verify
+        return _FakeResponse()
+
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _fake_post)
+
+    send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+    assert captured["verify"] is False
+
+
 def test_send_report_email_no_proxy_bypasses_real_proxy_env_var(monkeypatch):
     # 실제 requests 동작으로 검증: 존재하지 않는 프록시 주소를 HTTPS_PROXY로
     # 심어두면, 프록시를 실제로 타는 경우 연결 실패로 확실히 구분된다.
     # MAIL_API_NO_PROXY=true일 때는 이 가짜 프록시를 무시하고 로컬 페이크
-    # 서버에 직접 도달해야 한다.
+    # 서버에 직접 도달해야 한다. 동시에 실제 요청 본문이 순수 JSON인지도
+    # (multipart가 아니라) 함께 확인한다.
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -221,8 +243,10 @@ def test_send_report_email_no_proxy_bypasses_real_proxy_env_var(monkeypatch):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             received["hit"] = True
+            received["content_type"] = self.headers.get("Content-Type")
             length = int(self.headers.get("Content-Length", 0))
-            self.rfile.read(length)
+            body = self.rfile.read(length)
+            received["body"] = json.loads(body.decode("utf-8"))
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -248,6 +272,9 @@ def test_send_report_email_no_proxy_bypasses_real_proxy_env_var(monkeypatch):
         send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
 
         assert received.get("hit") is True
+        assert received["content_type"] == "application/json;charset=utf-8"
+        assert received["body"]["subject"] == "제목"
+        assert received["body"]["contents"] == "<p>본문</p>"
     finally:
         server.shutdown()
 

@@ -148,13 +148,21 @@ CLI와 마찬가지로 사용자별 토큰은 조회에만 쓰이며, 각 사용
 ### 이메일로 리포트 받기 (선택)
 
 SMTP가 아니라 사내 메일 발송 REST API(기본값 `openapi.samsung.net`)를
-씁니다. `.env`에 `MAIL_API_TOKEN` / `MAIL_API_SYSTEM_ID` / `MAIL_API_USER_ID`
+씁니다. JSON을 그대로 요청 본문(body)에 담아 POST합니다(multipart/form-data
+아님). `.env`에 `MAIL_API_TOKEN` / `MAIL_API_SYSTEM_ID` / `MAIL_API_USER_ID`
 를 설정하면 `/analyze` 결과 화면에 "이메일로 받기" 버튼이 나옵니다.
 로그인 아이디 그대로 `<아이디>@samsung.com`으로, 분석 리포트(요약 표,
 페이지별 가이드라인 점수, 발견된 문제/수정안, 최종 수정본까지 전부)를
 HTML 형식으로 그대로 보냅니다 - 웹 UI에 렌더링되는 내용과 동일합니다.
 셋 중 하나라도 없으면 버튼을 눌러도 설정이 안 됐다는 안내가 뜹니다.
 자세한 환경변수는 `.env.example`을 참고하세요.
+
+**"CO400" 등 파라미터 오류가 뜬다면** 요청 본문 형식이 API가 기대하는
+것과 다르다는 뜻입니다 - 이 앱은 JSON 문자열을 그대로 body에 담아
+`Content-Type: application/json;charset=utf-8`로 보냅니다
+(multipart/form-data로 감싸지 않습니다). 사내 메일 API 문서/샘플 코드와
+실제 요청 형식이 다르면 같은 오류가 재현될 수 있으니, 성공이 확인된
+샘플 코드가 있다면 알려주세요 - 정확히 맞춰서 고칠 수 있습니다.
 
 **"이메일 발송에 실패했습니다: 401 ..." 같은 오류가 뜬다면** 화면에 표시된
 응답 본문을 확인하세요 - `MAIL_API_TOKEN`이 만료/오발급됐거나,
@@ -177,6 +185,10 @@ strip해서 보내므로 그 자체는 문제가 되지 않습니다 - 그래도
 > `MAIL_API_NO_PROXY`를 다시 끄고, 502는 프록시가 아닌 다른 원인(메일 API
 > 서버 자체의 일시적 문제, 타임아웃 등)일 가능성을 사내 인프라팀과
 > 확인하세요.
+
+메일 API 서버가 자체 서명 인증서를 써서 TLS 검증이 실패한다면
+`MAIL_API_VERIFY_SSL=false`로 끌 수 있습니다(기본값 `true`,
+`CONFLUENCE_VERIFY_SSL`과 동일한 성격).
 
 ### 사용자/토큰 저장소: SQLite(로컬) vs PostgreSQL(서버)
 
