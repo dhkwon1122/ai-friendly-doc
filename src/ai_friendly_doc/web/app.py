@@ -19,6 +19,7 @@ from ..confluence_client import ConfluenceClient
 from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES
 from ..report import render_report
 from . import db
+from .mailer import MailConfigError, send_report_email
 from .security import SecurityConfigError, decrypt_token, encrypt_token, hash_password, verify_password
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -298,3 +299,54 @@ def analyze_download(request: Request, mode: str = Form(...), value: str = Form(
         media_type="text/markdown",
         headers={"Content-Disposition": 'attachment; filename="ai-friendly-doc-report.md"'},
     )
+
+
+@app.post("/analyze/email", response_class=HTMLResponse)
+def analyze_email(request: Request, mode: str = Form(...), value: str = Form(...), email: str = Form(...)):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    guideline_context = {"core_guidelines": CORE_GUIDELINES, "extra_guidelines": EXTRA_GUIDELINES}
+    email = email.strip()
+
+    try:
+        reports = _run_analysis(user, mode, value)
+    except SecurityConfigError as e:
+        return render(request, "analyze.html", error=str(e), mode=mode, value=value, **guideline_context)
+    except Exception as e:  # noqa: BLE001 - 사용자에게 원인 표시
+        return render(
+            request, "analyze.html", error=f"Confluence 조회 중 오류: {e}", mode=mode, value=value, **guideline_context
+        )
+
+    if not reports:
+        return render(
+            request,
+            "analyze.html",
+            error="분석할 페이지를 찾지 못했습니다.",
+            mode=mode,
+            value=value,
+            **guideline_context,
+        )
+
+    report_markdown = render_report(reports)
+    report_html = md.markdown(report_markdown, extensions=["tables"])
+    render_context = dict(
+        mode=mode,
+        value=value,
+        report_html=report_html,
+        report_markdown=report_markdown,
+        reports=reports,
+        **guideline_context,
+    )
+
+    try:
+        send_report_email(
+            email,
+            subject=f"[ai-friendly-doc] 분석 리포트 ({len(reports)}개 페이지)",
+            body_html=report_html,
+        )
+    except MailConfigError as e:
+        return render(request, "analyze.html", error=str(e), **render_context)
+
+    return render(request, "analyze.html", email_sent=email, **render_context)
