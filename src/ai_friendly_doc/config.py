@@ -21,8 +21,7 @@ def parse_bool_env(value: str | None, default: bool) -> bool:
 @dataclass(frozen=True)
 class ConfluenceConfig:
     base_url: str
-    email: str  # 계정 ID (Server/DC는 로그인 ID, Cloud는 이메일)
-    api_token: str  # 비밀번호. HTTP Basic Auth로 (email, api_token)을 그대로 보낸다.
+    api_token: str  # Personal Access Token(PAT). Authorization: Bearer 헤더로 보낸다.
     verify_ssl: bool = True  # 사내 서버가 자체 서명 인증서를 쓰면 False로 (신뢰 가능한 네트워크에서만 끌 것)
 
     @property
@@ -34,14 +33,12 @@ def load_confluence_config() -> ConfluenceConfig:
     load_dotenv()
 
     base_url = os.environ.get("CONFLUENCE_BASE_URL")
-    email = os.environ.get("CONFLUENCE_EMAIL")
     api_token = os.environ.get("CONFLUENCE_API_TOKEN")
 
     missing = [
         name
         for name, value in [
             ("CONFLUENCE_BASE_URL", base_url),
-            ("CONFLUENCE_EMAIL", email),
             ("CONFLUENCE_API_TOKEN", api_token),
         ]
         if not value
@@ -57,7 +54,6 @@ def load_confluence_config() -> ConfluenceConfig:
 
     return ConfluenceConfig(
         base_url=base_url,
-        email=email,
         api_token=api_token,
         verify_ssl=verify_ssl,
     )

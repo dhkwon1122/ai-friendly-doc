@@ -5,24 +5,21 @@ from ai_friendly_doc.config import ConfluenceConfig
 from ai_friendly_doc.confluence_client import DEFAULT_USER_AGENT, ConfluenceClient
 
 
-def make_config(email: str = "someone", api_token: str = "secret", verify_ssl: bool = True) -> ConfluenceConfig:
+def make_config(api_token: str = "secret", verify_ssl: bool = True) -> ConfluenceConfig:
     return ConfluenceConfig(
         base_url="https://example.atlassian.net/wiki",
-        email=email,
         api_token=api_token,
         verify_ssl=verify_ssl,
     )
 
 
-def test_basic_auth_sets_session_auth_tuple():
-    client = ConfluenceClient(make_config(email="someone@example.com"))
-    assert client._session.auth == ("someone@example.com", "secret")
-
-
-def test_non_email_account_id_works_as_basic_auth_username():
-    # 사내 Server/DC 계정 ID는 이메일 형식이 아닐 수 있음 (예: "hong.gildong")
-    client = ConfluenceClient(make_config(email="hong.gildong"))
-    assert client._session.auth == ("hong.gildong", "secret")
+def test_bearer_auth_sets_authorization_header():
+    # 다수의 사내 Confluence Server/DC가 관리자 설정으로 Basic Auth 자체를
+    # 꺼두므로("Basic Authentication has been disabled on this instance"),
+    # 계정 ID/비밀번호가 아니라 PAT(Bearer) 인증만 쓴다.
+    client = ConfluenceClient(make_config(api_token="my-pat-token"))
+    assert client._session.headers["Authorization"] == "Bearer my-pat-token"
+    assert client._session.auth is None
 
 
 def test_verify_ssl_defaults_to_true():
@@ -77,9 +74,10 @@ class _FakeSession:
 
 
 def test_get_page_error_includes_response_body_for_diagnosis():
-    # WAF/게이트웨이가 막은 경우 응답 본문에 진짜 차단 사유가 담겨 있는 경우가
-    # 많다 - raise_for_status()만 쓰면 이 정보가 사라지므로, 에러 메시지에
-    # 그대로 포함되는지 확인한다.
+    # WAF/게이트웨이나 Confluence 자체(예: "Basic Authentication has been
+    # disabled on this instance")가 막은 경우 응답 본문에 진짜 차단 사유가
+    # 담겨 있는 경우가 많다 - raise_for_status()만 쓰면 이 정보가 사라지므로,
+    # 에러 메시지에 그대로 포함되는지 확인한다.
     fake_response = _FakeResponse(status_code=403, text="Blocked by WAF: unauthorized user agent")
     client = ConfluenceClient(make_config(), session=_FakeSession(fake_response))
 
@@ -95,15 +93,15 @@ def test_get_page_error_without_body_falls_back_to_plain_message():
         client.get_page("123")
 
 
-def test_get_page_error_includes_account_and_base_url_for_diagnosis():
-    # "인증 방식 문제가 아닌데도 403"이 재현될 때, 실제로 어떤 계정 ID/base_url로
-    # 요청했는지가 에러에 그대로 보여야 - 예를 들어 인증 방식 단순화 이전에
-    # 저장해둔 값을 재저장하지 않고 그대로 쓰고 있어서 기대와 다른 계정으로
-    # 요청되고 있는 경우를 사용자가 바로 알아챌 수 있다.
+def test_get_page_error_includes_base_url_and_token_length_for_diagnosis():
+    # "인증 방식 문제가 아닌데도 403"이 재현될 때, 실제로 어떤 base_url로
+    # 요청했는지와 토큰이 비어있지 않은지가 에러에 그대로 보여야 - 예전
+    # 방식으로 저장해둔 값을 재저장하지 않고 그대로 쓰고 있어서 토큰이 비어
+    # 있거나 기대와 다른 경우를 사용자가 바로 알아챌 수 있다.
     fake_response = _FakeResponse(status_code=403, text="")
-    client = ConfluenceClient(make_config(email="hong.gildong"), session=_FakeSession(fake_response))
+    client = ConfluenceClient(make_config(api_token="abcdefgh"), session=_FakeSession(fake_response))
 
-    with pytest.raises(requests.HTTPError, match=r"요청 계정: 'hong\.gildong'"):
+    with pytest.raises(requests.HTTPError, match=r"PAT 길이: 8"):
         client.get_page("123")
 
 
