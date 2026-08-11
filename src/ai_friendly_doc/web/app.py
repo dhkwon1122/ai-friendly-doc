@@ -312,17 +312,28 @@ def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(..
 
 
 @app.post("/analyze/download")
-def analyze_download(request: Request, mode: str = Form(...), value: str = Form(...)):
+def analyze_download(
+    request: Request,
+    mode: str = Form(...),
+    value: str = Form(...),
+    report_markdown: str = Form(""),
+):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
 
-    try:
-        reports = _run_analysis(user, mode, value)
-    except Exception as e:  # noqa: BLE001 - 다운로드 실패 사유를 그대로 보여줌
-        return PlainTextResponse(f"리포트를 생성하지 못했습니다: {e}", status_code=400)
+    # /analyze에서 이미 만들어둔 리포트가 hidden 필드로 같이 넘어오면 그대로
+    # 쓴다 - Confluence 재조회 + LLM 재검토(findings/fixes 호출과 수정본
+    # 생성 호출, 페이지당 최대 2번씩)를 다시 돌릴 필요가 없다. 예전 방식대로
+    # mode/value만 오면(예: 외부에서 이 엔드포인트를 직접 호출) 그때만
+    # 새로 분석한다.
+    if not report_markdown:
+        try:
+            reports = _run_analysis(user, mode, value)
+        except Exception as e:  # noqa: BLE001 - 다운로드 실패 사유를 그대로 보여줌
+            return PlainTextResponse(f"리포트를 생성하지 못했습니다: {e}", status_code=400)
+        report_markdown = render_report(reports)
 
-    report_markdown = render_report(reports)
     return PlainTextResponse(
         report_markdown,
         media_type="text/markdown",
@@ -331,7 +342,13 @@ def analyze_download(request: Request, mode: str = Form(...), value: str = Form(
 
 
 @app.post("/analyze/email", response_class=HTMLResponse)
-def analyze_email(request: Request, mode: str = Form(...), value: str = Form(...)):
+def analyze_email(
+    request: Request,
+    mode: str = Form(...),
+    value: str = Form(...),
+    report_markdown: str = Form(""),
+    page_count: int = Form(0),
+):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
@@ -341,26 +358,39 @@ def analyze_email(request: Request, mode: str = Form(...), value: str = Form(...
     # (예: "hong.gildong" 로그인 → "hong.gildong@samsung.com").
     email = f"{user.username}@samsung.com"
 
-    try:
-        reports = _run_analysis(user, mode, value)
-    except SecurityConfigError as e:
-        return render(request, "analyze.html", error=str(e), mode=mode, value=value, **guideline_context)
-    except Exception as e:  # noqa: BLE001 - 사용자에게 원인 표시
-        return render(
-            request, "analyze.html", error=f"Confluence 조회 중 오류: {e}", mode=mode, value=value, **guideline_context
-        )
+    reports = None
+    # 다운로드와 마찬가지로, /analyze에서 이미 만들어둔 리포트가 hidden
+    # 필드로 넘어오면 재사용한다 - 그렇지 않으면 화면에 이미 보이는 결과를
+    # 메일로 보내는 것뿐인데도 Confluence 재조회 + LLM 재검토가 통째로 다시
+    # 돌아서 오래 걸린다.
+    if not report_markdown:
+        try:
+            reports = _run_analysis(user, mode, value)
+        except SecurityConfigError as e:
+            return render(request, "analyze.html", error=str(e), mode=mode, value=value, **guideline_context)
+        except Exception as e:  # noqa: BLE001 - 사용자에게 원인 표시
+            return render(
+                request,
+                "analyze.html",
+                error=f"Confluence 조회 중 오류: {e}",
+                mode=mode,
+                value=value,
+                **guideline_context,
+            )
 
-    if not reports:
-        return render(
-            request,
-            "analyze.html",
-            error="분석할 페이지를 찾지 못했습니다.",
-            mode=mode,
-            value=value,
-            **guideline_context,
-        )
+        if not reports:
+            return render(
+                request,
+                "analyze.html",
+                error="분석할 페이지를 찾지 못했습니다.",
+                mode=mode,
+                value=value,
+                **guideline_context,
+            )
 
-    report_markdown = render_report(reports)
+        report_markdown = render_report(reports)
+        page_count = len(reports)
+
     report_html = md.markdown(report_markdown, extensions=["tables"])
     render_context = dict(
         mode=mode,
@@ -374,7 +404,7 @@ def analyze_email(request: Request, mode: str = Form(...), value: str = Form(...
     try:
         send_report_email(
             email,
-            subject=f"[ai-friendly-doc] 분석 리포트 ({len(reports)}개 페이지)",
+            subject=f"[ai-friendly-doc] 분석 리포트 ({page_count}개 페이지)",
             body_html=report_html,
         )
     except MailConfigError as e:
