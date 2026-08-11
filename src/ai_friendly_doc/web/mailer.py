@@ -16,6 +16,8 @@ import os
 
 import requests
 
+from ..config import parse_bool_env
+
 _logger = logging.getLogger(__name__)
 
 DEFAULT_MAIL_API_BASE_URL = "https://openapi.samsung.net/mail/api/v2.0"
@@ -58,6 +60,13 @@ def send_report_email(to_email: str, subject: str, body_html: str) -> None:
     base_url = (os.environ.get("MAIL_API_BASE_URL") or DEFAULT_MAIL_API_BASE_URL).rstrip("/")
     url = f"{base_url}/mails/send"
 
+    # 사내 프록시(HTTP_PROXY/HTTPS_PROXY)가 이 사내 API 호출을 제대로
+    # 못 넘겨서(예: 502 Bad Gateway) 502가 나는 경우가 있다. MAIL_API_NO_PROXY=true면
+    # 환경변수 프록시를 무시하고 이 호출만 직접 나가도록 강제한다 - 스킴
+    # 키를 명시적으로 채워서 requests가 환경변수 프록시로 덮어쓰지 못하게 한다.
+    no_proxy = parse_bool_env(os.environ.get("MAIL_API_NO_PROXY"), default=False)
+    proxies = {"http": None, "https": None} if no_proxy else None
+
     mail_payload = {
         "subject": subject,
         "contents": body_html,
@@ -81,6 +90,7 @@ def send_report_email(to_email: str, subject: str, body_html: str) -> None:
             },
             files={"mail": (None, mail_part, "application/json;charset=utf-8")},
             timeout=DEFAULT_TIMEOUT_SECONDS,
+            proxies=proxies,
         )
         response.raise_for_status()
     except requests.HTTPError as e:
