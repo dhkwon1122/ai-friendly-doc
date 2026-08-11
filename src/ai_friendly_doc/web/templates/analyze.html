@@ -36,7 +36,7 @@
 {% if report_html %}
 <div class="report">
   <div class="report-actions">
-    <form method="post" action="/analyze/download">
+    <form method="post" action="/analyze/download" class="download-form">
       <input type="hidden" name="mode" value="{{ mode }}">
       <input type="hidden" name="value" value="{{ value }}">
       <button class="secondary" type="submit">Markdown으로 다운로드</button>
@@ -44,8 +44,8 @@
     <form method="post" action="/analyze/email" class="email-form">
       <input type="hidden" name="mode" value="{{ mode }}">
       <input type="hidden" name="value" value="{{ value }}">
-      <input type="email" name="email" placeholder="you@example.com" value="{{ email_sent or '' }}" required>
       <button class="secondary" type="submit">이메일로 받기</button>
+      <span class="hint">{{ user.username }}@samsung.com로 발송됩니다</span>
     </form>
   </div>
   {% if email_sent %}<p class="notice">{{ email_sent }}(으)로 리포트를 보냈습니다.</p>{% endif %}
