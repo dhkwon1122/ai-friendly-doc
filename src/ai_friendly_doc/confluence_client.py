@@ -2,6 +2,12 @@
 
 쓰기 API는 의도적으로 제공하지 않는다. 이 도구는 원본 문서를 수정하지 않고
 개선 제안 리포트만 생성한다.
+
+인증은 Personal Access Token(PAT) 기반 Bearer 인증만 지원한다. 계정
+ID/비밀번호로 하는 HTTP Basic Auth는 지원하지 않는다 - 다수의 사내
+Confluence Server/DC 인스턴스가 관리자 설정으로 Basic Auth 자체를 꺼두고
+("Basic Authentication has been disabled on this instance") PAT/SSO만
+허용하기 때문에, 자격증명이 맞아도 Basic Auth 요청은 무조건 거부된다.
 """
 
 from __future__ import annotations
@@ -48,9 +54,9 @@ class ConfluenceClient:
             # 사내 서버가 자체 서명 인증서를 쓰는 경우 검증을 끄되, urllib3의
             # InsecureRequestWarning이 요청마다 쏟아지는 것은 막는다.
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        # 계정 ID + 비밀번호로 HTTP Basic Auth. API 토큰/PAT 기반 인증은
-        # 지원하지 않는다 (사내 환경에서 토큰 방식이 막혀 있어 ID/비밀번호만 씀).
-        self._session.auth = (config.email, config.api_token)
+        # Personal Access Token(PAT) 기반 Bearer 인증. 계정 ID + 비밀번호로 하는
+        # Basic Auth는 쓰지 않는다 - 위 모듈 docstring 참고.
+        self._session.headers["Authorization"] = f"Bearer {config.api_token}"
         self._session.headers["User-Agent"] = os.environ.get("CONFLUENCE_USER_AGENT") or DEFAULT_USER_AGENT
 
     def get_page(self, page_id: str) -> ConfluencePage:
@@ -91,17 +97,18 @@ class ConfluenceClient:
         경우가 많아서, 있으면 에러 메시지에 그대로 붙여준다 - 서버 로그를
         따로 안 봐도 사용자가 원인을 바로 알 수 있도록.
 
-        403이 "자격증명은 맞는데 이 앱만 막힘"인지 "저장된 계정 ID/비밀번호
-        자체가 기대와 다름"(예: 인증 방식 단순화 이전에 저장해둔 값을
-        재저장하지 않고 그대로 쓰는 경우)인지 헷갈리기 쉬워서, 실제로 어떤
-        base_url/계정 ID로 요청했는지도 같이 보여준다 - 비밀번호는 당연히
+        403이 "PAT은 맞는데 이 앱만 막힘"인지 "저장된 토큰 자체가 기대와
+        다름/비어 있음"(예: 예전 방식으로 저장해둔 값을 재저장하지 않고 그대로
+        쓰는 경우)인지 헷갈리기 쉬워서, 실제로 어떤 base_url로 요청했는지와
+        토큰이 비어있지 않은지(길이만)도 같이 보여준다 - 토큰 값 자체는 당연히
         포함하지 않는다.
         """
         try:
             resp.raise_for_status()
         except requests.HTTPError as e:
             body_preview = (resp.text or "").strip()[:500]
-            context = f"(요청 계정: {self._config.email!r}, base_url: {self._config.base_url!r})"
+            token_len = len(self._config.api_token or "")
+            context = f"(base_url: {self._config.base_url!r}, PAT 길이: {token_len})"
             _logger.warning("Confluence 요청 실패: %s %s | 응답 본문: %s", e, context, body_preview)
             message = f"{e} {context}"
             if body_preview:

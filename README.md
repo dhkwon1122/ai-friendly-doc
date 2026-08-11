@@ -27,10 +27,14 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-계정 ID(`CONFLUENCE_EMAIL`) + 비밀번호(`CONFLUENCE_API_TOKEN`)로 HTTP Basic
-Auth만 지원합니다 (API 토큰/Personal Access Token 인증은 지원하지 않습니다
-- 사내 환경에서 토큰 방식 접근이 막혀 있는 경우가 있어 뺐습니다). 계정 ID는
-이메일 형식이 아니어도 됩니다(예: 사내 로그인 ID).
+Personal Access Token(PAT) 기반 Bearer 인증만 지원합니다 (`CONFLUENCE_API_TOKEN`
+자리에 PAT을 넣습니다). 계정 ID + 비밀번호로 하는 HTTP Basic Auth는 지원하지
+않습니다 - 다수의 사내 Confluence Server/DC가 관리자 설정으로 Basic Auth
+자체를 꺼두고 있어서(`"Basic Authentication has been disabled on this
+instance"`), 자격증명이 맞아도 Basic Auth 요청은 무조건 거부되기 때문입니다.
+PAT은 Confluence 프로필 > **Personal Access Tokens** 메뉴에서 발급받을 수
+있습니다 (Confluence 7.9+ Server/DC 기준. Cloud는 API 토큰을 그대로 넣어도
+됩니다).
 
 `CONFLUENCE_BASE_URL`은 Cloud 기준 `https://<domain>.atlassian.net/wiki` 형태입니다.
 
@@ -40,31 +44,25 @@ Auth만 지원합니다 (API 토큰/Personal Access Token 인증은 지원하지
 
 ### 조회가 "403 Forbidden"으로 실패할 때
 
-계정 ID/비밀번호가 맞는데도 조회가 403으로 실패하고, **같은 페이지를
-브라우저로는 정상적으로 볼 수 있다면** - 십중팔구 이 앱이 아니라 앞단
-WAF/게이트웨이가 원인입니다. 많은 사내 보안 장비가 브라우저처럼 보이지
-않는 요청(파이썬 `requests`의 기본 User-Agent 등)을 봇으로 간주해
-차단합니다. 이 경우:
-
-1. 기본적으로 일반적인 Chrome User-Agent를 흉내내도록 되어 있어 대부분은
-   이걸로 해결됩니다.
-2. 그래도 안 되면 `.env`의 `CONFLUENCE_USER_AGENT`에 실제 브라우저의
-   User-Agent 문자열을 그대로 넣어보세요 (브라우저 개발자 도구 > 네트워크
-   탭에서 아무 요청이나 열어 확인 가능).
-3. **웹 UI를 쓰고 있고, 예전에는(인증 방식이 계정ID+비밀번호로 단순화되기
-   전에) 됐었다면** - 에러 메시지의 "요청 계정: '...'" 부분을 확인하세요.
-   기대하는 계정 ID와 다르게 나온다면, `/settings`에 저장된 값이 예전
-   방식(API 토큰/PAT)으로 저장해둔 옛날 값 그대로일 가능성이 높습니다.
-   `/settings`에서 계정 ID와 비밀번호를 **다시 입력해서 저장**하세요 -
-   비밀번호 칸을 비워두고 저장하면 기존 값이 그대로 유지되므로, 반드시
-   새 비밀번호를 입력해야 갱신됩니다.
-4. 그래도 안 되고 요청 계정/base_url도 맞다면 IP 허용 목록이나 Basic Auth
-   자체를 막아둔 보안 정책 등 네트워크·서버 단의 문제일 가능성이 큽니다 -
+1. **응답 본문에 `"Basic Authentication has been disabled on this
+   instance"`가 보인다면** - 계정 ID/비밀번호(Basic Auth) 방식 자체가 서버
+   관리자 설정으로 막혀 있다는 뜻입니다. 자격증명을 아무리 바꿔도 코드로는
+   해결할 수 없고, 위 설정 안내대로 **Personal Access Token(PAT)을 발급받아
+   `CONFLUENCE_API_TOKEN`(웹 UI는 `/settings`)에 넣어야** 합니다.
+2. PAT이 맞는데도 403이 나고, **같은 페이지를 브라우저로는 정상적으로 볼 수
+   있다면** - 앞단 WAF/게이트웨이가 브라우저처럼 보이지 않는 요청(파이썬
+   `requests`의 기본 User-Agent 등)을 봇으로 간주해 차단하는 경우가 흔합니다.
+   기본적으로 일반적인 Chrome User-Agent를 흉내내도록 되어 있어 대부분은
+   이걸로 해결되고, 그래도 안 되면 `.env`의 `CONFLUENCE_USER_AGENT`에 실제
+   브라우저의 User-Agent 문자열을 그대로 넣어보세요 (브라우저 개발자 도구 >
+   네트워크 탭에서 아무 요청이나 열어 확인 가능).
+3. 웹 UI에서 에러 메시지의 "PAT 길이: 0" 같은 표시가 보인다면 `/settings`에
+   토큰이 아예 저장되지 않은 것이니 다시 입력해서 저장하세요.
+4. 그래도 안 되면 IP 허용 목록 등 네트워크 단의 문제일 가능성이 큽니다 -
    이건 코드로 해결할 수 없고 사내 인프라/보안팀 확인이 필요합니다.
 
-에러 메시지에는 실제 요청에 쓰인 계정 ID/base_url과, 서버 응답 본문이
-있다면 그 내용(예: "Blocked by ...")까지 그대로 표시되니 확인해보세요
-(비밀번호는 포함되지 않습니다).
+에러 메시지에는 실제 요청에 쓰인 base_url과 토큰 길이(토큰 값 자체는
+제외), 서버 응답 본문이 있다면 그 내용까지 그대로 표시되니 확인해보세요.
 
 ## 사용법 (CLI)
 
@@ -110,9 +108,10 @@ URL을 직접 입력하는 경로는 없고, 모든 사용자에게 이 값 하�
 
 흐름:
 1. `/register`에서 계정 생성 (아이디 + 비밀번호, bcrypt로 해시 저장)
-2. `/settings`에서 본인의 Confluence 계정 ID + 비밀번호만 입력 → 값은
-   `FERNET_KEY`로 암호화되어 DB에 저장. API 토큰/PAT 인증은 지원하지
-   않습니다(위 참고). Confluence Base URL은 입력할 필요가 없습니다(위 참고).
+2. `/settings`에서 본인의 Confluence Personal Access Token(PAT)만 입력 →
+   값은 `FERNET_KEY`로 암호화되어 DB에 저장. 계정 ID + 비밀번호(Basic Auth)
+   방식은 지원하지 않습니다(위 참고). Confluence Base URL은 입력할 필요가
+   없습니다(위 참고).
 3. `/analyze`에서 페이지 ID(들) 또는 스페이스 키를 입력해 분석 실행 →
    결과는 화면에 바로 렌더링되고, "Markdown으로 다운로드" 버튼으로 파일도
    받을 수 있고, 이메일 주소를 입력해 "이메일로 받기"로 리포트를 메일로도
