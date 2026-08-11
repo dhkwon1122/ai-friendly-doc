@@ -24,7 +24,6 @@ def _base_env(monkeypatch, **overrides):
     env = {
         "CONFLUENCE_BASE_URL": "https://example.atlassian.net/wiki",
         "CONFLUENCE_API_TOKEN": "token",
-        "CONFLUENCE_AUTH_TYPE": "basic",
         "CONFLUENCE_EMAIL": "someone@example.com",
     }
     env.update(overrides)
@@ -47,7 +46,7 @@ def test_load_confluence_config_verify_ssl_can_be_disabled(monkeypatch):
     assert config.verify_ssl is False
 
 
-def test_load_confluence_config_userpass_requires_email(monkeypatch):
-    _base_env(monkeypatch, CONFLUENCE_AUTH_TYPE="userpass", CONFLUENCE_EMAIL=None)
-    with pytest.raises(ConfigError):
+def test_load_confluence_config_requires_email(monkeypatch):
+    _base_env(monkeypatch, CONFLUENCE_EMAIL=None)
+    with pytest.raises(ConfigError, match="CONFLUENCE_EMAIL"):
         load_confluence_config()
