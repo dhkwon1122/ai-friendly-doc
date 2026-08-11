@@ -23,15 +23,38 @@
 {% endif %}
 
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
-<form method="post" action="/analyze">
-  <fieldset>
-    <legend>대상</legend>
-    <label><input type="radio" name="mode" value="page_ids" {% if mode != 'space_key' %}checked{% endif %}> 페이지 ID (한 줄에 하나씩, 또는 쉼표로 구분)</label>
-    <label><input type="radio" name="mode" value="space_key" {% if mode == 'space_key' %}checked{% endif %}> 스페이스 키 (스페이스 내 모든 페이지)</label>
-  </fieldset>
-  <textarea name="value" placeholder="예: 123456&#10;234567&#10;또는 ENG">{{ value or '' }}</textarea>
-  <button type="submit">분석 실행</button>
+<form method="post" action="/analyze/fetch">
+  <input type="hidden" name="mode" value="page_ids">
+  <label>Confluence 페이지 ID (한 줄에 하나씩, 또는 쉼표로 구분)</label>
+  <textarea name="value" placeholder="예: 123456&#10;234567">{{ value or '' }}</textarea>
+  <button type="submit">문서 조회</button>
 </form>
+
+{% if fetched_pages %}
+<div class="doc-compare">
+  <h2>조회된 문서</h2>
+  <p class="hint">
+    원본 내용을 먼저 확인하세요. AI 분석(가이드라인 점검 + 수정안 생성)은
+    문서 길이에 따라 시간이 걸릴 수 있습니다.
+  </p>
+  {% for f in fetched_pages %}
+  <details class="doc-compare-page" {% if loop.first %}open{% endif %}>
+    <summary>
+      {{ f.page.title }}
+      {% if f.page.web_url %}<a class="original-link" href="{{ f.page.web_url }}" target="_blank" rel="noopener">원본 열기 ↗</a>{% endif %}
+    </summary>
+    <div class="doc-pane">
+      <pre>{{ f.original_document }}</pre>
+    </div>
+  </details>
+  {% endfor %}
+  <form method="post" action="/analyze">
+    <input type="hidden" name="mode" value="{{ mode }}">
+    <input type="hidden" name="value" value="{{ value }}">
+    <button type="submit">AI 분석 실행 ({{ fetched_pages|length }}개 페이지)</button>
+  </form>
+</div>
+{% endif %}
 
 {% if report_html %}
 <div class="report">
