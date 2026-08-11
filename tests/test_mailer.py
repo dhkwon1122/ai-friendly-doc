@@ -56,12 +56,13 @@ def test_send_report_email_posts_multipart_mail_part(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, params=None, headers=None, files=None, timeout=None):
+    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
         captured["url"] = url
         captured["params"] = params
         captured["headers"] = headers
         captured["files"] = files
         captured["timeout"] = timeout
+        captured["proxies"] = proxies
         return _FakeResponse()
 
     monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _fake_post)
@@ -72,6 +73,7 @@ def test_send_report_email_posts_multipart_mail_part(monkeypatch):
     assert captured["params"] == {"userID": "user-456"}
     assert captured["headers"]["Authorization"] == "Bearer test-token"
     assert captured["headers"]["System-ID"] == "sys-123"
+    assert captured["proxies"] is None  # MAIL_API_NO_PROXY 미설정 시 기본 동작(환경변수 프록시를 따름) 유지
 
     filename, content, content_type = captured["files"]["mail"]
     assert filename is None
@@ -88,12 +90,12 @@ def test_send_report_email_posts_multipart_mail_part(monkeypatch):
 def test_send_report_email_defaults_sender_to_user_id(monkeypatch):
     _set_full_config(monkeypatch, MAIL_API_SENDER_ADDRESS=None)
 
-    def _fake_post(url, params=None, headers=None, files=None, timeout=None):
+    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
         return _FakeResponse()
 
     captured_payload = {}
 
-    def _capturing_post(url, params=None, headers=None, files=None, timeout=None):
+    def _capturing_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
         captured_payload["payload"] = json.loads(files["mail"][1].decode("utf-8"))
         return _FakeResponse()
 
@@ -157,7 +159,7 @@ def test_send_report_email_strips_whitespace_from_env_values(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, params=None, headers=None, files=None, timeout=None):
+    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
         captured["params"] = params
         captured["headers"] = headers
         return _FakeResponse()
@@ -169,6 +171,85 @@ def test_send_report_email_strips_whitespace_from_env_values(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer test-token"
     assert captured["headers"]["System-ID"] == "sys-123"
     assert captured["params"] == {"userID": "user-456"}
+
+
+def test_send_report_email_no_proxy_forces_proxies_none(monkeypatch):
+    # MAIL_API_NO_PROXY=true면 환경변수 프록시(HTTP_PROXY/HTTPS_PROXY)가
+    # 이 사내 API 호출을 제대로 못 넘겨서(예: 502) 실패하는 경우를 위해,
+    # 이 호출만 프록시를 건너뛰도록 강제해야 한다.
+    _set_full_config(monkeypatch, MAIL_API_NO_PROXY="true")
+
+    captured = {}
+
+    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
+        captured["proxies"] = proxies
+        return _FakeResponse()
+
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _fake_post)
+
+    send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+    assert captured["proxies"] == {"http": None, "https": None}
+
+
+def test_send_report_email_no_proxy_false_keeps_default_behavior(monkeypatch):
+    _set_full_config(monkeypatch, MAIL_API_NO_PROXY="false")
+
+    captured = {}
+
+    def _fake_post(url, params=None, headers=None, files=None, timeout=None, proxies=None):
+        captured["proxies"] = proxies
+        return _FakeResponse()
+
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _fake_post)
+
+    send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+    assert captured["proxies"] is None
+
+
+def test_send_report_email_no_proxy_bypasses_real_proxy_env_var(monkeypatch):
+    # 실제 requests 동작으로 검증: 존재하지 않는 프록시 주소를 HTTPS_PROXY로
+    # 심어두면, 프록시를 실제로 타는 경우 연결 실패로 확실히 구분된다.
+    # MAIL_API_NO_PROXY=true일 때는 이 가짜 프록시를 무시하고 로컬 페이크
+    # 서버에 직접 도달해야 한다.
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    received = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received["hit"] = True
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"mailId":"mail-1"}')
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _set_full_config(
+            monkeypatch,
+            MAIL_API_NO_PROXY="true",
+            MAIL_API_BASE_URL=f"http://127.0.0.1:{port}",
+        )
+        # 존재하지 않는 프록시 주소 - 실제로 이걸 타면 연결 자체가 실패한다.
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+
+        send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+        assert received.get("hit") is True
+    finally:
+        server.shutdown()
 
 
 def test_send_report_email_raises_on_network_error(monkeypatch):
