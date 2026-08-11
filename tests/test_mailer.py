@@ -60,9 +60,8 @@ def test_send_report_email_posts_plain_json_body(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, params=None, headers=None, data=None, timeout=None, proxies=None, verify=None):
+    def _fake_post(url, headers=None, data=None, timeout=None, proxies=None, verify=None):
         captured["url"] = url
-        captured["params"] = params
         captured["headers"] = headers
         captured["data"] = data
         captured["timeout"] = timeout
@@ -74,8 +73,9 @@ def test_send_report_email_posts_plain_json_body(monkeypatch):
 
     send_report_email("someone@example.com", subject="분석 리포트", body_html="<p>본문 내용</p>")
 
-    assert captured["url"] == "https://openapi.samsung.net/mail/api/v2.0/mails/send"
-    assert captured["params"] == {"userID": "user-456"}
+    # userID는 requests의 params= kwarg가 아니라 URL 쿼리스트링에 직접
+    # 실려야 한다 (실제 테스트로 params= 방식은 API가 못 읽는 것으로 확인됨).
+    assert captured["url"] == "https://openapi.samsung.net/mail/api/v2.0/mails/send?userID=user-456"
     assert captured["headers"]["Authorization"] == "Bearer test-token"
     assert captured["headers"]["System-ID"] == "sys-123"
     assert captured["headers"]["Content-Type"] == "application/json;charset=utf-8"
@@ -109,6 +109,24 @@ def test_send_report_email_defaults_sender_to_user_id(monkeypatch):
     assert captured_payload["payload"]["sender"] == {"emailAddress": "user-456"}
 
 
+def test_send_report_email_url_encodes_user_id_in_query_string(monkeypatch):
+    # userID에 URL에서 특별한 의미를 갖는 문자(&, = 등)가 섞여 있으면
+    # 쿼리스트링이 깨질 수 있으니 인코딩되는지 확인한다.
+    _set_full_config(monkeypatch, MAIL_API_USER_ID="user&name=x")
+
+    captured = {}
+
+    def _fake_post(url, **kwargs):
+        captured["url"] = url
+        return _FakeResponse()
+
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _fake_post)
+
+    send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+    assert captured["url"].endswith("?userID=user%26name%3Dx")
+
+
 def test_send_report_email_uses_custom_base_url(monkeypatch):
     _set_full_config(monkeypatch, MAIL_API_BASE_URL="https://mail.internal.example.com/api/v9/")
 
@@ -122,7 +140,7 @@ def test_send_report_email_uses_custom_base_url(monkeypatch):
 
     send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
 
-    assert captured["url"] == "https://mail.internal.example.com/api/v9/mails/send"
+    assert captured["url"] == "https://mail.internal.example.com/api/v9/mails/send?userID=user-456"
 
 
 def test_send_report_email_raises_on_http_error_status(monkeypatch):
@@ -162,8 +180,8 @@ def test_send_report_email_strips_whitespace_from_env_values(monkeypatch):
 
     captured = {}
 
-    def _fake_post(url, params=None, headers=None, data=None, timeout=None, proxies=None, verify=None):
-        captured["params"] = params
+    def _fake_post(url, headers=None, data=None, timeout=None, proxies=None, verify=None):
+        captured["url"] = url
         captured["headers"] = headers
         return _FakeResponse()
 
@@ -173,7 +191,7 @@ def test_send_report_email_strips_whitespace_from_env_values(monkeypatch):
 
     assert captured["headers"]["Authorization"] == "Bearer test-token"
     assert captured["headers"]["System-ID"] == "sys-123"
-    assert captured["params"] == {"userID": "user-456"}
+    assert captured["url"].endswith("?userID=user-456")
 
 
 def test_send_report_email_no_proxy_forces_proxies_none(monkeypatch):
@@ -243,6 +261,7 @@ def test_send_report_email_no_proxy_bypasses_real_proxy_env_var(monkeypatch):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             received["hit"] = True
+            received["path"] = self.path
             received["content_type"] = self.headers.get("Content-Type")
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
@@ -272,6 +291,7 @@ def test_send_report_email_no_proxy_bypasses_real_proxy_env_var(monkeypatch):
         send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
 
         assert received.get("hit") is True
+        assert received["path"] == "/mails/send?userID=user-456"
         assert received["content_type"] == "application/json;charset=utf-8"
         assert received["body"]["subject"] == "제목"
         assert received["body"]["contents"] == "<p>본문</p>"
