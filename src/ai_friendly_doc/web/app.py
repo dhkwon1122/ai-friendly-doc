@@ -344,7 +344,7 @@ def analyze_email(request: Request, mode: str = Form(...), value: str = Form(...
         send_report_email(
             email,
             subject=f"[ai-friendly-doc] 분석 리포트 ({len(reports)}개 페이지)",
-            body=report_markdown,
+            body_html=report_html,
         )
     except MailConfigError as e:
         return render(request, "analyze.html", error=str(e), **render_context)

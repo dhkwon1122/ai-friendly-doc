@@ -1,128 +1,152 @@
-import email
-import email.header
+import json
 
 import pytest
+import requests
 
 from ai_friendly_doc.web.mailer import MailConfigError, is_mail_configured, send_report_email
 
 
-def test_is_mail_configured_false_when_smtp_host_unset(monkeypatch):
-    monkeypatch.delenv("SMTP_HOST", raising=False)
+def _set_full_config(monkeypatch, **overrides):
+    values = {
+        "MAIL_API_TOKEN": "test-token",
+        "MAIL_API_SYSTEM_ID": "sys-123",
+        "MAIL_API_USER_ID": "user-456",
+    }
+    values.update(overrides)
+    for key, value in values.items():
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+
+
+def test_is_mail_configured_false_when_token_unset(monkeypatch):
+    monkeypatch.delenv("MAIL_API_TOKEN", raising=False)
     assert is_mail_configured() is False
 
 
-def test_is_mail_configured_true_when_smtp_host_set(monkeypatch):
-    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+def test_is_mail_configured_true_when_token_set(monkeypatch):
+    monkeypatch.setenv("MAIL_API_TOKEN", "test-token")
     assert is_mail_configured() is True
 
 
-def test_send_report_email_raises_when_smtp_host_missing(monkeypatch):
-    monkeypatch.delenv("SMTP_HOST", raising=False)
-    with pytest.raises(MailConfigError, match="SMTP_HOST"):
-        send_report_email("someone@example.com", subject="제목", body="본문")
+@pytest.mark.parametrize("missing", ["MAIL_API_TOKEN", "MAIL_API_SYSTEM_ID", "MAIL_API_USER_ID"])
+def test_send_report_email_raises_when_required_env_missing(monkeypatch, missing):
+    _set_full_config(monkeypatch, **{missing: None})
+    with pytest.raises(MailConfigError, match=missing):
+        send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
 
 
-class _FakeSMTP:
-    instances: list["_FakeSMTP"] = []
+class _FakeResponse:
+    def __init__(self, status_code=200, json_body=None):
+        self.status_code = status_code
+        self._json_body = json_body if json_body is not None else {"mailId": "mail-1"}
 
-    def __init__(self, host, port, timeout=None):
-        self.host = host
-        self.port = port
-        self.timeout = timeout
-        self.started_tls = False
-        self.login_args = None
-        self.sent = None
-        _FakeSMTP.instances.append(self)
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} error", response=self)
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc_info):
-        return False
-
-    def starttls(self):
-        self.started_tls = True
-
-    def login(self, username, password):
-        self.login_args = (username, password)
-
-    def sendmail(self, from_addr, to_addrs, message):
-        self.sent = (from_addr, to_addrs, message)
+    def json(self):
+        return self._json_body
 
 
-@pytest.fixture(autouse=True)
-def _reset_fake_smtp():
-    _FakeSMTP.instances.clear()
-    yield
-    _FakeSMTP.instances.clear()
+def test_send_report_email_posts_multipart_mail_part(monkeypatch):
+    _set_full_config(monkeypatch, MAIL_API_SENDER_ADDRESS="bot@example.com")
+
+    captured = {}
+
+    def _fake_post(url, params=None, headers=None, files=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        captured["files"] = files
+        captured["timeout"] = timeout
+        return _FakeResponse()
+
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _fake_post)
+
+    send_report_email("someone@example.com", subject="분석 리포트", body_html="<p>본문 내용</p>")
+
+    assert captured["url"] == "https://openapi.samsung.net/mail/api/v2.0/mails/send"
+    assert captured["params"] == {"userID": "user-456"}
+    assert captured["headers"]["Authorization"] == "Bearer test-token"
+    assert captured["headers"]["System-ID"] == "sys-123"
+
+    filename, content, content_type = captured["files"]["mail"]
+    assert filename is None
+    assert content_type == "application/json;charset=utf-8"
+    payload = json.loads(content.decode("utf-8"))
+    assert payload["subject"] == "분석 리포트"
+    assert payload["contents"] == "<p>본문 내용</p>"
+    assert payload["contentType"] == "html"
+    assert payload["docSecuType"] == "PERSONAL"
+    assert payload["sender"] == {"emailAddress": "bot@example.com"}
+    assert payload["recipients"] == [{"emailAddress": "someone@example.com", "recipientType": "TO"}]
 
 
-def test_send_report_email_sends_via_smtp(monkeypatch):
-    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
-    monkeypatch.setenv("SMTP_PORT", "2525")
-    monkeypatch.setenv("SMTP_USERNAME", "bot")
-    monkeypatch.setenv("SMTP_PASSWORD", "secret")
-    monkeypatch.setenv("SMTP_FROM", "bot@example.com")
-    monkeypatch.setattr("ai_friendly_doc.web.mailer.smtplib.SMTP", _FakeSMTP)
+def test_send_report_email_defaults_sender_to_user_id(monkeypatch):
+    _set_full_config(monkeypatch, MAIL_API_SENDER_ADDRESS=None)
 
-    send_report_email("someone@example.com", subject="분석 리포트", body="본문 내용")
+    def _fake_post(url, params=None, headers=None, files=None, timeout=None):
+        return _FakeResponse()
 
-    assert len(_FakeSMTP.instances) == 1
-    fake = _FakeSMTP.instances[0]
-    assert fake.host == "smtp.example.com"
-    assert fake.port == 2525
-    assert fake.started_tls is True
-    assert fake.login_args == ("bot", "secret")
-    from_addr, to_addrs, message = fake.sent
-    assert from_addr == "bot@example.com"
-    assert to_addrs == ["someone@example.com"]
-    # 한글이 섞이면 MIMEText가 base64로 인코딩하므로, 파싱해서 디코딩한
-    # 내용으로 검증한다 (인코딩된 원문 문자열에는 그대로 안 나타남).
-    parsed = email.message_from_string(message)
-    assert email.header.decode_header(parsed["Subject"])[0][0].decode("utf-8") == "분석 리포트"
-    assert parsed.get_payload(decode=True).decode("utf-8") == "본문 내용"
+    captured_payload = {}
+
+    def _capturing_post(url, params=None, headers=None, files=None, timeout=None):
+        captured_payload["payload"] = json.loads(files["mail"][1].decode("utf-8"))
+        return _FakeResponse()
+
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _capturing_post)
+
+    send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+    assert captured_payload["payload"]["sender"] == {"emailAddress": "user-456"}
 
 
-def test_send_report_email_skips_login_when_no_credentials(monkeypatch):
-    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
-    monkeypatch.delenv("SMTP_USERNAME", raising=False)
-    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
-    monkeypatch.setattr("ai_friendly_doc.web.mailer.smtplib.SMTP", _FakeSMTP)
+def test_send_report_email_uses_custom_base_url(monkeypatch):
+    _set_full_config(monkeypatch, MAIL_API_BASE_URL="https://mail.internal.example.com/api/v9/")
 
-    send_report_email("someone@example.com", subject="제목", body="본문")
+    captured = {}
 
-    assert _FakeSMTP.instances[0].login_args is None
+    def _fake_post(url, **kwargs):
+        captured["url"] = url
+        return _FakeResponse()
 
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _fake_post)
 
-def test_send_report_email_skips_starttls_when_disabled(monkeypatch):
-    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
-    monkeypatch.setenv("SMTP_USE_TLS", "false")
-    monkeypatch.setattr("ai_friendly_doc.web.mailer.smtplib.SMTP", _FakeSMTP)
+    send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
 
-    send_report_email("someone@example.com", subject="제목", body="본문")
-
-    assert _FakeSMTP.instances[0].started_tls is False
+    assert captured["url"] == "https://mail.internal.example.com/api/v9/mails/send"
 
 
-def test_send_report_email_defaults_from_address_when_unset(monkeypatch):
-    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
-    monkeypatch.delenv("SMTP_FROM", raising=False)
-    monkeypatch.delenv("SMTP_USERNAME", raising=False)
-    monkeypatch.setattr("ai_friendly_doc.web.mailer.smtplib.SMTP", _FakeSMTP)
+def test_send_report_email_raises_on_http_error_status(monkeypatch):
+    _set_full_config(monkeypatch)
+    monkeypatch.setattr(
+        "ai_friendly_doc.web.mailer.requests.post", lambda *a, **k: _FakeResponse(status_code=401)
+    )
 
-    send_report_email("someone@example.com", subject="제목", body="본문")
-
-    from_addr, _, _ = _FakeSMTP.instances[0].sent
-    assert from_addr == "ai-friendly-doc@localhost"
+    with pytest.raises(MailConfigError, match="401"):
+        send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
 
 
-def test_send_report_email_wraps_connection_failure(monkeypatch):
-    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+def test_send_report_email_raises_on_network_error(monkeypatch):
+    _set_full_config(monkeypatch)
 
     def _raise(*args, **kwargs):
-        raise ConnectionRefusedError("연결 거부")
+        raise requests.ConnectionError("연결 실패")
 
-    monkeypatch.setattr("ai_friendly_doc.web.mailer.smtplib.SMTP", _raise)
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _raise)
 
-    with pytest.raises(MailConfigError, match="연결 거부"):
-        send_report_email("someone@example.com", subject="제목", body="본문")
+    with pytest.raises(MailConfigError, match="연결 실패"):
+        send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+
+def test_send_report_email_succeeds_even_if_response_body_not_json(monkeypatch):
+    class _NonJsonResponse(_FakeResponse):
+        def json(self):
+            raise ValueError("not json")
+
+    _set_full_config(monkeypatch)
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", lambda *a, **k: _NonJsonResponse())
+
+    send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
