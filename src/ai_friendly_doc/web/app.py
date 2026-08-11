@@ -298,7 +298,10 @@ def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(..
         )
 
     report_markdown = render_report(reports)
-    report_html = md.markdown(report_markdown, extensions=["tables"])
+    # fenced_code가 없으면 최종 수정본을 감싼 ```...``` 블록이 코드 블록으로
+    # 인식되지 않고 일반 문단 취급돼서, 그 안의 줄바꿈이 markdown 문법상
+    # 그냥 공백으로 뭉개져버린다("줄바꿈이 다 깨진다"는 증상의 원인).
+    report_html = md.markdown(report_markdown, extensions=["tables", "fenced_code"])
     return render(
         request,
         "analyze.html",
@@ -391,7 +394,10 @@ def analyze_email(
         report_markdown = render_report(reports)
         page_count = len(reports)
 
-    report_html = md.markdown(report_markdown, extensions=["tables"])
+    # fenced_code가 없으면 최종 수정본을 감싼 ```...``` 블록이 코드 블록으로
+    # 인식되지 않고 일반 문단 취급돼서, 그 안의 줄바꿈이 markdown 문법상
+    # 그냥 공백으로 뭉개져버린다("줄바꿈이 다 깨진다"는 증상의 원인).
+    report_html = md.markdown(report_markdown, extensions=["tables", "fenced_code"])
     render_context = dict(
         mode=mode,
         value=value,

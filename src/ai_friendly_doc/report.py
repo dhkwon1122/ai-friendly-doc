@@ -43,6 +43,8 @@ def render_page_section(report: PageReport) -> str:
         lines.append(f"- 원본: [{page.web_url}]({page.web_url})")
     lines.append(f"- 페이지 ID: {page.id} / 스페이스: {page.space_key} / 버전: {page.version}")
     lines.append("")
+    # 가장 궁금해하는 결과물(수정 제안)을 발견 사항 나열보다 먼저 보여준다.
+    lines.extend(_render_revision_section(report))
     lines.extend(_render_guideline_checklist(report.guideline_score))
 
     if not report.suggestions:
@@ -57,7 +59,6 @@ def render_page_section(report: PageReport) -> str:
             lines.append(f"- 제안: {s.suggestion}")
             lines.append("")
 
-    lines.extend(_render_revision_section(report))
     return "\n".join(lines)
 
 
