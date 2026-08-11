@@ -55,8 +55,15 @@ class ConfluenceClient:
             # InsecureRequestWarning이 요청마다 쏟아지는 것은 막는다.
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         # Personal Access Token(PAT) 기반 Bearer 인증. 계정 ID + 비밀번호로 하는
-        # Basic Auth는 쓰지 않는다 - 위 모듈 docstring 참고.
-        self._session.headers["Authorization"] = f"Bearer {config.api_token}"
+        # Basic Auth는 쓰지 않는다 - 위 모듈 docstring 참고. 토큰 앞뒤 공백/개행은
+        # 복사-붙여넣기 과정에서 섞여 들어가기 쉽고, 그러면 자격증명 자체는
+        # 맞아도 Authorization 헤더 값이 미묘하게 달라져 401이 난다 - 방어적으로
+        # strip한다.
+        self._session.headers["Authorization"] = f"Bearer {config.api_token.strip()}"
+        # 일부 사내 게이트웨이는 Accept 헤더가 없으면 REST API 대신 브라우저용
+        # 로그인/HTML 흐름으로 요청을 취급해 인증 결과가 달라진다 - 명시적으로
+        # JSON을 요구한다.
+        self._session.headers["Accept"] = "application/json"
         self._session.headers["User-Agent"] = os.environ.get("CONFLUENCE_USER_AGENT") or DEFAULT_USER_AGENT
 
     def get_page(self, page_id: str) -> ConfluencePage:

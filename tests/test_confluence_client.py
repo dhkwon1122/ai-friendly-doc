@@ -22,6 +22,21 @@ def test_bearer_auth_sets_authorization_header():
     assert client._session.auth is None
 
 
+def test_bearer_auth_strips_whitespace_from_token():
+    # PAT을 복사-붙여넣기하는 과정에서 앞뒤 공백/개행이 섞여 들어가기 쉽다 -
+    # 자격증명 자체는 맞아도 Authorization 헤더 값이 미묘하게 달라져 401이
+    # 나는 흔한 원인이라 방어적으로 strip해야 한다.
+    client = ConfluenceClient(make_config(api_token="  my-pat-token\n"))
+    assert client._session.headers["Authorization"] == "Bearer my-pat-token"
+
+
+def test_accept_header_requests_json():
+    # 일부 사내 게이트웨이는 Accept 헤더가 없으면 REST API 대신 브라우저용
+    # 로그인/HTML 흐름으로 요청을 취급해 인증 결과가 달라진다.
+    client = ConfluenceClient(make_config())
+    assert client._session.headers["Accept"] == "application/json"
+
+
 def test_verify_ssl_defaults_to_true():
     client = ConfluenceClient(make_config())
     assert client._session.verify is True
