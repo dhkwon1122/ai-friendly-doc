@@ -31,7 +31,10 @@ def is_mail_configured() -> bool:
 
 
 def _require_env(name: str) -> str:
-    value = os.environ.get(name)
+    # .env에 값을 붙여넣는 과정에서 앞뒤 공백/개행이 섞여 들어가기 쉽고,
+    # 그러면 자격증명 자체는 맞아도 헤더 값이 미묘하게 달라져 401이 나는
+    # 흔한 원인이라 방어적으로 strip한다 (Confluence PAT과 동일한 문제).
+    value = (os.environ.get(name) or "").strip()
     if not value:
         raise MailConfigError(
             f"{name} 환경변수가 설정되지 않았습니다. .env.example의 메일 API 관련 항목을 참고하세요."
@@ -80,6 +83,17 @@ def send_report_email(to_email: str, subject: str, body_html: str) -> None:
             timeout=DEFAULT_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
+    except requests.HTTPError as e:
+        # 상태 코드/URL만으로는 401/403의 실제 원인(토큰 만료, System-ID/userID
+        # 불일치 등)을 알 수 없는 경우가 많다 - Confluence 클라이언트와 마찬가지로
+        # 응답 본문이 있으면 에러 메시지에 그대로 포함해서 서버 로그 없이도
+        # 화면에서 바로 원인을 확인할 수 있게 한다.
+        body_preview = (e.response.text or "").strip()[:500] if e.response is not None else ""
+        _logger.warning("메일 발송 API 호출 실패: %s | 응답 본문: %s", e, body_preview)
+        message = f"이메일 발송에 실패했습니다: {e}"
+        if body_preview:
+            message += f" | 응답 본문: {body_preview}"
+        raise MailConfigError(message) from e
     except requests.RequestException as e:
         _logger.warning("메일 발송 API 호출 실패: %s", e)
         raise MailConfigError(f"이메일 발송에 실패했습니다: {e}") from e
