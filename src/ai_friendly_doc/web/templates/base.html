@@ -101,7 +101,7 @@
       gap: 0.5rem;
       align-items: center;
     }
-    .email-form input[type=email] { width: 220px; }
+    button:disabled { opacity: 0.6; cursor: progress; }
     .original-link {
       font-size: 0.8rem;
       font-weight: 400;
@@ -127,5 +127,27 @@
     </div>
   </nav>
   {% block content %}{% endblock %}
+  <script>
+    // 분석/이메일 발송 등은 LLM 호출 때문에 몇십 초씩 걸릴 수 있는데, 폼
+    // 제출은 페이지 전체를 다시 불러오는 방식이라 그동안 화면에 아무
+    // 변화가 없어 눌렸는지조차 알기 어렵다. 제출 시 버튼을 바로 비활성화하고
+    // 문구를 바꿔서 "처리 중"임을 보여준다.
+    document.addEventListener('submit', function (e) {
+      var form = e.target;
+      var btn = form.querySelector('button[type=submit]');
+      if (!btn || btn.disabled) return;
+      var original = btn.textContent;
+      btn.textContent = '처리 중...';
+      btn.disabled = true;
+      // 다운로드 폼은 파일이 응답으로 내려올 뿐 페이지 이동이 없어서
+      // 버튼이 영영 비활성 상태로 남는다 - 잠시 후 원래대로 되돌린다.
+      if (form.classList.contains('download-form')) {
+        setTimeout(function () {
+          btn.textContent = original;
+          btn.disabled = false;
+        }, 4000);
+      }
+    });
+  </script>
 </body>
 </html>

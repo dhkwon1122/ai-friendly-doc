@@ -289,13 +289,15 @@ def analyze_download(request: Request, mode: str = Form(...), value: str = Form(
 
 
 @app.post("/analyze/email", response_class=HTMLResponse)
-def analyze_email(request: Request, mode: str = Form(...), value: str = Form(...), email: str = Form(...)):
+def analyze_email(request: Request, mode: str = Form(...), value: str = Form(...)):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
 
     guideline_context = {"core_guidelines": CORE_GUIDELINES, "extra_guidelines": EXTRA_GUIDELINES}
-    email = email.strip()
+    # 별도 입력란 없이 로그인 아이디 그대로 사내 메일 주소로 사용한다
+    # (예: "hong.gildong" 로그인 → "hong.gildong@samsung.com").
+    email = f"{user.username}@samsung.com"
 
     try:
         reports = _run_analysis(user, mode, value)

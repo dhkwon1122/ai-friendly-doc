@@ -38,9 +38,10 @@ def test_send_report_email_raises_when_required_env_missing(monkeypatch, missing
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, json_body=None):
+    def __init__(self, status_code=200, json_body=None, text=""):
         self.status_code = status_code
         self._json_body = json_body if json_body is not None else {"mailId": "mail-1"}
+        self.text = text
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -127,6 +128,47 @@ def test_send_report_email_raises_on_http_error_status(monkeypatch):
 
     with pytest.raises(MailConfigError, match="401"):
         send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+
+def test_send_report_email_http_error_includes_response_body(monkeypatch):
+    # 401/403만으로는 실제 원인(토큰 만료, System-ID/userID 불일치 등)을 알 수
+    # 없는 경우가 많다 - Confluence 클라이언트와 마찬가지로 응답 본문이 있으면
+    # 에러 메시지에 그대로 포함되는지 확인한다.
+    _set_full_config(monkeypatch)
+    monkeypatch.setattr(
+        "ai_friendly_doc.web.mailer.requests.post",
+        lambda *a, **k: _FakeResponse(status_code=401, text='{"message":"invalid or expired token"}'),
+    )
+
+    with pytest.raises(MailConfigError, match="invalid or expired token"):
+        send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+
+def test_send_report_email_strips_whitespace_from_env_values(monkeypatch):
+    # .env에 값을 붙여넣을 때 앞뒤 공백/개행이 섞여 들어가기 쉽고, 그러면
+    # 자격증명 자체는 맞아도 헤더 값이 미묘하게 달라져 401이 나는 흔한
+    # 원인이라 방어적으로 strip해야 한다.
+    _set_full_config(
+        monkeypatch,
+        MAIL_API_TOKEN="  test-token\n",
+        MAIL_API_SYSTEM_ID=" sys-123 ",
+        MAIL_API_USER_ID="user-456\n",
+    )
+
+    captured = {}
+
+    def _fake_post(url, params=None, headers=None, files=None, timeout=None):
+        captured["params"] = params
+        captured["headers"] = headers
+        return _FakeResponse()
+
+    monkeypatch.setattr("ai_friendly_doc.web.mailer.requests.post", _fake_post)
+
+    send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
+
+    assert captured["headers"]["Authorization"] == "Bearer test-token"
+    assert captured["headers"]["System-ID"] == "sys-123"
+    assert captured["params"] == {"userID": "user-456"}
 
 
 def test_send_report_email_raises_on_network_error(monkeypatch):
