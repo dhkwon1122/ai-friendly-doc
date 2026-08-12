@@ -54,6 +54,16 @@ def test_plain_text_includes_list_items():
     assert "- 두 번째" in text
 
 
+def test_plain_text_numbers_ordered_list_items_sequentially():
+    # ol을 ul과 똑같이 "- "로 바꿔버리면 원본이 순서 있는(번호 매겨진)
+    # 목록이었다는 사실 자체가 LLM에게 안 보인다 - 실제 1, 2, 3 번호를
+    # 매겨서 순서 목록이었다는 사실과 항목 순서를 함께 전달해야 한다.
+    text = storage_html_to_plain_text("<ol><li>첫 단계</li><li>두 번째 단계</li><li>세 번째 단계</li></ol>")
+    assert "1. 첫 단계" in text
+    assert "2. 두 번째 단계" in text
+    assert "3. 세 번째 단계" in text
+
+
 def test_plain_text_includes_table_rows():
     html = "<table><tbody><tr><th>이름</th><th>값</th></tr><tr><td>a</td><td>1</td></tr></tbody></table>"
     text = storage_html_to_plain_text(html)
