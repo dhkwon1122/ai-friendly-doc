@@ -1,15 +1,19 @@
 import pytest
 import requests
 
-from ai_friendly_doc.config import ConfluenceConfig
+from ai_friendly_doc.config import DEFAULT_WEB_BASE_URL, ConfluenceConfig
 from ai_friendly_doc.confluence_client import DEFAULT_USER_AGENT, ConfluenceClient
 
 
-def make_config(api_token: str = "secret", verify_ssl: bool = True) -> ConfluenceConfig:
+def make_config(api_token: str = "secret", verify_ssl: bool = True, web_base_url: str | None = None) -> ConfluenceConfig:
+    kwargs = {}
+    if web_base_url is not None:
+        kwargs["web_base_url"] = web_base_url
     return ConfluenceConfig(
         base_url="https://example.atlassian.net/wiki",
         api_token=api_token,
         verify_ssl=verify_ssl,
+        **kwargs,
     )
 
 
@@ -126,3 +130,35 @@ def test_iter_space_pages_error_includes_response_body_for_diagnosis():
 
     with pytest.raises(requests.HTTPError, match="Blocked by WAF: IP not allowed"):
         list(client.iter_space_pages("ENG"))
+
+
+def _make_page_json(links_base: str = "https://api-gateway.internal.example.com") -> dict:
+    return {
+        "id": "123",
+        "title": "테스트 문서",
+        "space": {"key": "ENG"},
+        "version": {"number": 1},
+        "body": {"storage": {"value": "<p>본문</p>"}},
+        "_links": {"webui": "/spaces/ENG/pages/123", "base": links_base},
+    }
+
+
+def test_get_page_web_url_uses_configured_web_base_url_not_api_links_base():
+    # API 응답의 _links.base는 API 게이트웨이 주소를 가리키는 경우가 흔해서
+    # (REST 호출용 base_url과 겹치거나 사람이 못 쓰는 내부 주소), 원본 문서
+    # 링크에는 그 값 대신 설정된 web_base_url을 항상 써야 한다.
+    fake_response = _FakeResponse(status_code=200, json_data=_make_page_json())
+    client = ConfluenceClient(make_config(web_base_url="https://confluence.samsungds.net"), session=_FakeSession(fake_response))
+
+    page = client.get_page("123")
+
+    assert page.web_url == "https://confluence.samsungds.net/spaces/ENG/pages/123"
+
+
+def test_get_page_web_url_defaults_to_org_default_when_unset():
+    fake_response = _FakeResponse(status_code=200, json_data=_make_page_json())
+    client = ConfluenceClient(make_config(), session=_FakeSession(fake_response))
+
+    page = client.get_page("123")
+
+    assert page.web_url == f"{DEFAULT_WEB_BASE_URL}/spaces/ENG/pages/123"

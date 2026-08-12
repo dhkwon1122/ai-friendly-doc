@@ -126,7 +126,11 @@ class ConfluenceClient:
         page_id = raw["id"]
         space_key = raw.get("space", {}).get("key", "")
         webui = raw.get("_links", {}).get("webui", "")
-        base = raw.get("_links", {}).get("base", self._config.base_url)
+        # API 응답의 _links.base는 API 게이트웨이 주소를 가리키는 경우가
+        # 흔해서(REST 호출에 쓴 base_url과 같은 값이거나 아예 그 값을 그대로
+        # 돌려주기도 함) 원본 문서 링크로 쓰기에 부적절할 수 있다 - 설정된
+        # web_base_url(사람이 브라우저로 보는 주소)을 항상 우선한다.
+        base = self._config.web_base_url
         return ConfluencePage(
             id=page_id,
             title=raw["title"],
