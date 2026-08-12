@@ -61,9 +61,10 @@ def _match_item(line: str, tag: str) -> tuple[int | None, str] | None:
     return int(m.group(1)), m.group(2).strip()
 
 
-def _parse_list(lines: list[str], start: int, n: int, tag: str) -> tuple[str, int]:
+def _parse_list(lines: list[str], start: int, n: int, tag: str, ordered_start: int | None = None) -> tuple[str, int, int]:
     """항목 사이에 들여쓰기된 하위 목록이나 빈 줄이 끼어 있어도 하나의
-    <ol>/<ul>로 계속 묶는다.
+    <ol>/<ul>로 계속 묶는다. (html, 다음 인덱스, 이 목록에서 처리한
+    최상위 항목 개수) 튜플을 반환한다.
 
     항목 하나가 끝날 때마다 새 <ol>/<ul>을 만들면, Confluence는 그 목록을
     다시 1번부터 번호를 매기기 때문에(각 항목이 전부 "1."로 보이는 문제)
@@ -72,25 +73,26 @@ def _parse_list(lines: list[str], start: int, n: int, tag: str) -> tuple[str, in
     하위 목록은 바로 위 항목의 <li> 안에 중첩된 목록으로 넣고, 상위 번호
     목록 자체는 계속 이어간다.
 
-    다만 표/문단처럼 목록 항목이 아닌 다른 블록이 번호 항목 사이에 끼는
-    경우까지 전부 여기서 미리 예측해 병합할 수는 없다(끼어들 수 있는
-    블록 종류가 너무 다양하다). 그래서 여기서 병합하지 못해 결국 별도의
-    <ol>로 갈라지더라도, 그 <ol>이 실제로 몇 번부터 시작하는 항목인지는
-    소스에 적힌 숫자(예: "2. ")에서 그대로 읽어 <ol start="N">으로
-    표시한다 - 병합 여부와 무관하게, Confluence가 항상 1번부터 다시
-    매기는 문제 자체를 원천적으로 막는다.
+    표/문단처럼 목록 항목이 아닌 다른 블록이 번호 항목 사이에 끼는 경우는
+    여기서 병합할 수 없어 결국 별도의 <ol>로 갈라진다. 이때 호출자
+    (markdown_to_confluence_storage)가 "이 <ol>이 실제로 몇 번부터 이어져야
+    하는지"를 ordered_start로 계산해서 넘겨주면 <ol start="N">으로 반영한다.
+
+    소스에 적힌 숫자(예: "2. ")는 항목 구분에만 쓰고 실제 번호로는 신뢰하지
+    않는다 - 자체 호스팅하는 소형 모델일수록 표/하위 목록으로 항목이
+    끊기면 번호를 제대로 못 올리고 "1."을 계속 반복해서 쓰는 경우가 흔해서,
+    그 숫자를 그대로 쓰면 여전히 1, 1, 1로 보인다.
     """
     items: list[str] = []
     i = start
-    first_number: int | None = None
+    count = 0
     while i < n:
         current = lines[i].rstrip()
         matched = _match_item(current, tag)
         if matched is None:
             break
-        number, text = matched
-        if first_number is None:
-            first_number = number
+        _, text = matched  # 소스에 적힌 번호는 항목 구분 용도로만 쓰고 무시한다
+        count += 1
         item_html = _inline_to_storage(text)
         i += 1
 
@@ -132,8 +134,12 @@ def _parse_list(lines: list[str], start: int, n: int, tag: str) -> tuple[str, in
             else:
                 break
 
-    start_attr = f' start="{first_number}"' if tag == "ol" and first_number not in (None, 1) else ""
-    return f"<{tag}{start_attr}>{''.join(items)}</{tag}>", i
+    if tag == "ol":
+        start_number = ordered_start if ordered_start is not None else 1
+        start_attr = f' start="{start_number}"' if start_number != 1 else ""
+    else:
+        start_attr = ""
+    return f"<{tag}{start_attr}>{''.join(items)}</{tag}>", i, count
 
 
 def _render_table(table_lines: list[str]) -> str:
@@ -166,6 +172,11 @@ def markdown_to_confluence_storage(text: str) -> str:
     i = 0
     n = len(lines)
 
+    # 번호 목록이 표/문단 등으로 끊겨 여러 <ol>로 갈라지더라도 번호가 계속
+    # 이어지도록 여기서 직접 센다(다음 <ol>이 시작해야 할 번호). 제목이
+    # 나오면 새로운 주제로 보고 다시 1부터 시작한다.
+    ordered_next_start: int | None = None
+
     while i < n:
         line = lines[i].rstrip()
 
@@ -179,6 +190,7 @@ def markdown_to_confluence_storage(text: str) -> str:
             heading_text = _inline_to_storage(heading_match.group(2).strip())
             parts.append(f"<h{level}>{heading_text}</h{level}>")
             i += 1
+            ordered_next_start = None
             continue
 
         if _TABLE_ROW_RE.match(line):
@@ -193,7 +205,10 @@ def markdown_to_confluence_storage(text: str) -> str:
         ordered_match = _ORDERED_ITEM_RE.match(line)
         if list_match or ordered_match:
             tag = "ul" if list_match else "ol"
-            list_html, i = _parse_list(lines, i, n, tag)
+            list_html, i, count = _parse_list(lines, i, n, tag, ordered_next_start)
+            if tag == "ol":
+                start_number = ordered_next_start if ordered_next_start is not None else 1
+                ordered_next_start = start_number + count
             parts.append(list_html)
             continue
 
