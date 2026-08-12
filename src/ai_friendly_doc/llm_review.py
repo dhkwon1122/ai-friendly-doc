@@ -127,6 +127,9 @@ REVISION_SYSTEM_PROMPT = """\
 - 목록에 없는, 문제가 없던 부분은 그대로 유지합니다 (불필요하게 다시
   쓰지 않습니다).
 - 원본과 같은 평문 형식(제목은 #/##/###, 표는 | a | b |)을 유지합니다.
+- **표는 반드시 헤더 행 바로 다음 줄에 "|---|---|"처럼 컬럼 수만큼
+  구분선을 넣으세요** (예: 컬럼 3개면 "|---|---|---|"). 이 구분선이
+  없으면 표로 인식되지 않고 그냥 텍스트로 뭉개져 보입니다.
 - **목록은 원본의 순서 여부를 그대로 보존하세요**: 원본 문서에서 "1. ",
   "2. "처럼 번호가 매겨진 순서 목록(순서/절차가 중요한 단계 목록 등)은
   수정본에서도 반드시 "1. ", "2. ", "3. "처럼 1부터 시작해 번호를 하나씩
@@ -212,10 +215,21 @@ def storage_html_to_plain_text(
                     if text:
                         lines.append(f"{idx}. {text}")
             elif name == "table":
+                # 마크다운 표는 헤더 바로 다음 줄에 "|---|---|" 구분선이
+                # 없으면 표로 인식되지 않는다(Confluence의 Markdown 매크로
+                # 포함, 대부분의 마크다운 파서가 GFM 표 문법을 따른다) -
+                # 구분선이 없으면 그냥 파이프가 섞인 문단 취급돼서, 줄
+                # 사이 개행도 소프트 브레이크로 접혀 표 전체가 한 줄로
+                # 뭉개져 보인다. 그래서 헤더 다음에 구분선을 항상 넣는다.
+                header_added = False
                 for row in child.find_all("tr"):
                     cells = [c.get_text(strip=True) for c in row.find_all(["th", "td"])]
-                    if any(cells):
-                        lines.append("| " + " | ".join(cells) + " |")
+                    if not any(cells):
+                        continue
+                    lines.append("| " + " | ".join(cells) + " |")
+                    if not header_added:
+                        lines.append("|" + "|".join(["---"] * len(cells)) + "|")
+                        header_added = True
             elif name in ("ac:image", "img"):
                 lines.append(_image_line(child, name, attachments_by_filename))
             else:
