@@ -16,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..analyzer import PageReport, analyze_page, analyze_page_findings, generate_page_revision
-from ..config import ConfluenceConfig, parse_bool_env
+from ..config import DEFAULT_WEB_BASE_URL, ConfluenceConfig, parse_bool_env
 from ..confluence_client import ConfluenceClient
 from ..confluence_storage import markdown_to_confluence_storage
 from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES, score_document
@@ -134,6 +134,14 @@ def _verify_ssl() -> bool:
     return parse_bool_env(os.environ.get("CONFLUENCE_VERIFY_SSL"), default=True)
 
 
+def _web_base_url() -> str:
+    """리포트/이메일에 넣는 "원본 문서 링크"용 base URL. REST API 호출에
+    쓰는 CONFLUENCE_BASE_URL과 별개다(API 게이트웨이 주소와 사람이
+    브라우저로 보는 주소가 다른 환경이 흔함). 지정 안 하면 조직 기본값을
+    쓴다."""
+    return (os.environ.get("CONFLUENCE_WEB_BASE_URL") or DEFAULT_WEB_BASE_URL).rstrip("/")
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_form(request: Request):
     user = current_user(request)
@@ -206,6 +214,7 @@ def _build_client(user: db.User) -> ConfluenceClient:
         base_url=_fixed_base_url(),
         api_token=decrypt_token(creds.encrypted_token),
         verify_ssl=_verify_ssl(),
+        web_base_url=_web_base_url(),
     )
     return ConfluenceClient(config)
 
@@ -326,6 +335,11 @@ def _render_copyable_revision_block(revisions: list[dict]) -> str:
     그래야 전체 선택 → 복사 → Confluence 소스 편집기에 붙여넣기가 그대로
     통한다(렌더링된 서식을 복사하면 원본 마크업이 아니라 브라우저가 임의로
     변환한 HTML이 복사돼서 깨지기 쉽다).
+
+    소스 편집기는 페이지 본문만 편집하고 제목은 별도 입력란이라, 제안
+    제목은 복사용 소스 밖에 안내 문구로 따로 보여준다. 원본 문서 링크는
+    반대로 본문에 포함돼야 의미가 있으므로, 복사용 소스 맨 위에 실제
+    Confluence storage 문단으로 끼워 넣는다.
     """
     blocks_with_content = [r for r in revisions if (r.get("revised_document") or "").strip()]
     if not blocks_with_content:
@@ -336,18 +350,33 @@ def _render_copyable_revision_block(revisions: list[dict]) -> str:
         "<h2>📋 최종 수정 제안 (Confluence에 바로 붙여넣기)</h2>",
         "<p>아래 내용을 전체 선택해서 복사한 뒤, Confluence에서 새 페이지를 만들고 "
         "편집기 오른쪽 위 <strong>⋯(더보기) 메뉴 → 소스 편집기</strong>를 열어 그대로 "
-        "붙여넣으면 서식이 적용된 페이지가 만들어집니다.</p>",
+        "붙여넣으면 서식이 적용된 페이지가 만들어집니다. 소스 편집기는 본문만 "
+        "편집할 수 있어 <strong>제목은 아래 제안 제목을 페이지 제목 입력란에 "
+        "직접 입력</strong>해야 합니다.</p>",
     ]
     for revision in blocks_with_content:
         storage = markdown_to_confluence_storage(revision["revised_document"])
         if not storage.strip():
             continue
-        title = html_module.escape(revision["title"])
-        parts.append(f"<h3>{title}</h3>")
+        title = revision["title"]
+        web_url = revision.get("web_url") or ""
+        suggested_title = html_module.escape(f"{title} (AI 개선 제안)")
+
+        # 원본 문서 링크는 본문 안에 있어야 의미가 있으므로, 소스 맨 위에
+        # 실제 Confluence storage 문단으로 끼워 넣는다(markdown_to_confluence_storage
+        # 는 이 링크에 대해 모르므로 여기서 직접 조립).
+        if web_url:
+            link_html = html_module.escape(web_url)
+            source_with_link = f'<p><em>원본 문서: <a href="{link_html}">{html_module.escape(title)}</a></em></p>\n{storage}'
+        else:
+            source_with_link = storage
+
+        parts.append(f"<h3>{html_module.escape(title)}</h3>")
+        parts.append(f"<p>제안 제목: <strong>{suggested_title}</strong></p>")
         parts.append(
             '<pre style="white-space:pre-wrap;word-break:break-word;background:#f4f5f7;'
             'border:1px solid #ddd;border-radius:6px;padding:0.75rem;font-size:0.85rem;">'
-            f"{html_module.escape(storage)}</pre>"
+            f"{html_module.escape(source_with_link)}</pre>"
         )
     parts.append("</div><hr>")
     return "".join(parts)
