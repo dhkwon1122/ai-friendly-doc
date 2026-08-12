@@ -49,7 +49,7 @@ def analyze_page(page: ConfluencePage, rules: list[Rule] | None = None) -> PageR
 
     # 웹 UI에서 원본 vs 수정본을 나란히 보여줄 때 쓴다. 사람이 읽는 화면용이라
     # LLM 프롬프트용 자르기(max_chars)는 적용하지 않고 전체를 담는다.
-    original_document = storage_html_to_plain_text(page.storage_html, max_chars=None)
+    original_document = storage_html_to_plain_text(page.storage_html, max_chars=None, attachments=page.attachments)
     rule_suggestions = _check_rules(page, rules)
 
     # LLM이 설정돼 있으면, 규칙이 찾은 문제들도 LLM에게 같이 넘겨서 각각에 대한
@@ -98,7 +98,7 @@ def analyze_page_findings(page: ConfluencePage, rules: list[Rule] | None = None)
     생성).
     """
     llm_configured = is_llm_configured()
-    original_document = storage_html_to_plain_text(page.storage_html, max_chars=None)
+    original_document = storage_html_to_plain_text(page.storage_html, max_chars=None, attachments=page.attachments)
     rule_suggestions = _check_rules(page, rules)
 
     suggestions: list[Suggestion] = list(rule_suggestions)

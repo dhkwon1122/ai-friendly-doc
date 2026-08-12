@@ -132,7 +132,7 @@ def test_iter_space_pages_error_includes_response_body_for_diagnosis():
         list(client.iter_space_pages("ENG"))
 
 
-def _make_page_json(links_base: str = "https://api-gateway.internal.example.com") -> dict:
+def _make_page_json(links_base: str = "https://api-gateway.internal.example.com", attachment_results: list | None = None) -> dict:
     return {
         "id": "123",
         "title": "테스트 문서",
@@ -140,6 +140,7 @@ def _make_page_json(links_base: str = "https://api-gateway.internal.example.com"
         "version": {"number": 1},
         "body": {"storage": {"value": "<p>본문</p>"}},
         "_links": {"webui": "/spaces/ENG/pages/123", "base": links_base},
+        "children": {"attachment": {"results": attachment_results or []}},
     }
 
 
@@ -162,3 +163,67 @@ def test_get_page_web_url_defaults_to_org_default_when_unset():
     page = client.get_page("123")
 
     assert page.web_url == f"{DEFAULT_WEB_BASE_URL}/spaces/ENG/pages/123"
+
+
+def test_get_page_expand_param_includes_children_attachment():
+    # 첨부파일(이미지 등) 다운로드 링크를 만들려면 body.storage/version/space
+    # 뿐 아니라 children.attachment도 같이 받아와야 한다.
+    fake_response = _FakeResponse(status_code=200, json_data=_make_page_json())
+    fake_session = _FakeSession(fake_response)
+    client = ConfluenceClient(make_config(), session=fake_session)
+    captured = {}
+    original_get = fake_session.get
+
+    def capturing_get(url, params=None):
+        captured["params"] = params
+        return original_get(url, params=params)
+
+    fake_session.get = capturing_get
+    client.get_page("123")
+
+    assert "children.attachment" in captured["params"]["expand"]
+
+
+def test_get_page_parses_attachments_with_real_download_url():
+    # API 응답의 children.attachment.results에서 파일명과 다운로드 경로를
+    # 뽑아서, 원본 문서 링크와 마찬가지로 web_base_url을 기준으로 절대
+    # 주소를 만들어야 한다(URL 패턴을 추측하지 않고 API가 알려준 실제 경로 사용).
+    attachment_results = [
+        {"title": "diagram.png", "_links": {"download": "/download/attachments/123/diagram.png"}},
+        {"title": "notes.txt", "_links": {"download": "/download/attachments/123/notes.txt"}},
+    ]
+    fake_response = _FakeResponse(status_code=200, json_data=_make_page_json(attachment_results=attachment_results))
+    client = ConfluenceClient(
+        make_config(web_base_url="https://confluence.samsungds.net"), session=_FakeSession(fake_response)
+    )
+
+    page = client.get_page("123")
+
+    assert len(page.attachments) == 2
+    assert page.attachments[0].filename == "diagram.png"
+    assert page.attachments[0].download_url == "https://confluence.samsungds.net/download/attachments/123/diagram.png"
+    assert page.attachments[1].filename == "notes.txt"
+
+
+def test_get_page_skips_attachments_without_filename_or_download_link():
+    attachment_results = [
+        {"title": "broken.png"},  # download 링크 없음
+        {"_links": {"download": "/download/attachments/123/x.png"}},  # 파일명 없음
+    ]
+    fake_response = _FakeResponse(status_code=200, json_data=_make_page_json(attachment_results=attachment_results))
+    client = ConfluenceClient(make_config(), session=_FakeSession(fake_response))
+
+    page = client.get_page("123")
+
+    assert page.attachments == []
+
+
+def test_get_page_attachments_default_empty_when_no_children_field():
+    raw = _make_page_json()
+    del raw["children"]
+    fake_response = _FakeResponse(status_code=200, json_data=raw)
+    client = ConfluenceClient(make_config(), session=_FakeSession(fake_response))
+
+    page = client.get_page("123")
+
+    assert page.attachments == []

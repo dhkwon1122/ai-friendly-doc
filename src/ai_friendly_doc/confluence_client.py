@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator
 
 import requests
@@ -36,6 +36,12 @@ DEFAULT_USER_AGENT = (
 
 
 @dataclass(frozen=True)
+class Attachment:
+    filename: str
+    download_url: str
+
+
+@dataclass(frozen=True)
 class ConfluencePage:
     id: str
     title: str
@@ -43,6 +49,12 @@ class ConfluencePage:
     version: int
     storage_html: str
     web_url: str
+    # 이 페이지에 첨부된 파일 목록(이미지 포함) - 본문에 이미지가 있을 때
+    # 원본을 그대로 새 페이지에 옮길 방법이 없어서(쓰기 API 미제공), 대신
+    # 사람이 직접 다운로드해서 다시 첨부할 수 있게 실제 다운로드 링크를
+    # 만드는 데 쓴다. 기본값을 빈 리스트로 둬서 이 필드를 몰라도 되는
+    # 기존 호출부(테스트 등)가 계속 동작하게 한다.
+    attachments: list[Attachment] = field(default_factory=list)
 
 
 class ConfluenceClient:
@@ -69,7 +81,7 @@ class ConfluenceClient:
     def get_page(self, page_id: str) -> ConfluencePage:
         resp = self._session.get(
             f"{self._config.api_root}/content/{page_id}",
-            params={"expand": "body.storage,version,space"},
+            params={"expand": "body.storage,version,space,children.attachment"},
         )
         self._raise_for_status(resp)
         return self._to_page(resp.json())
@@ -83,7 +95,7 @@ class ConfluenceClient:
                     "spaceKey": space_key,
                     "type": "page",
                     "status": "current",
-                    "expand": "body.storage,version,space",
+                    "expand": "body.storage,version,space,children.attachment",
                     "start": start,
                     "limit": page_size,
                 },
@@ -138,4 +150,21 @@ class ConfluenceClient:
             version=raw.get("version", {}).get("number", 0),
             storage_html=raw.get("body", {}).get("storage", {}).get("value", ""),
             web_url=f"{base}{webui}" if webui else "",
+            attachments=self._parse_attachments(raw, base),
         )
+
+    def _parse_attachments(self, raw: dict, base: str) -> list[Attachment]:
+        # expand=children.attachment로 같이 받아온 첨부파일 목록에서
+        # 파일명과 실제 다운로드 링크(_links.download, base 기준 상대
+        # 경로)를 뽑아낸다. 원본 문서 링크와 마찬가지로 API 게이트웨이가
+        # 아니라 사람이 브라우저로 접속하는 web_base_url을 기준으로 절대
+        # 경로를 만든다.
+        results = raw.get("children", {}).get("attachment", {}).get("results", [])
+        attachments = []
+        for item in results:
+            filename = item.get("title")
+            download_href = item.get("_links", {}).get("download")
+            if not filename or not download_href:
+                continue
+            attachments.append(Attachment(filename=filename, download_url=f"{base}{download_href}"))
+        return attachments
