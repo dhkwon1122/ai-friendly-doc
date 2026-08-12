@@ -137,11 +137,12 @@ def test_analyze_page_findings_adds_error_suggestion_when_llm_call_fails(monkeyp
 
 def test_generate_page_revision_delegates_to_llm_review(monkeypatch):
     monkeypatch.setattr(
-        "ai_friendly_doc.analyzer.generate_revision",
-        lambda page, suggestions=None: ("# 최종 수정본", None),
+        "ai_friendly_doc.analyzer.generate_verified_revision",
+        lambda page, suggestions=None: ("# 최종 수정본", [], None),
     )
-    revised, error = generate_page_revision(make_page(), [])
+    revised, unresolved, error = generate_page_revision(make_page(), [])
     assert revised == "# 최종 수정본"
+    assert unresolved == []
     assert error is None
 
 
@@ -150,11 +151,12 @@ def test_generate_page_revision_can_be_called_without_prior_findings(monkeypatch
     # 한다 - "최종 수정본 제안" 버튼을 처음부터 바로 눌러도 되게 하려는 목적.
     captured = {}
 
-    def _fake_generate_revision(page, suggestions=None):
+    def _fake_generate_verified_revision(page, suggestions=None):
         captured["suggestions"] = suggestions
-        return "# 수정본", None
+        return "# 수정본", [], None
 
-    monkeypatch.setattr("ai_friendly_doc.analyzer.generate_revision", _fake_generate_revision)
-    revised, error = generate_page_revision(make_page(), None)
+    monkeypatch.setattr("ai_friendly_doc.analyzer.generate_verified_revision", _fake_generate_verified_revision)
+    revised, unresolved, error = generate_page_revision(make_page(), None)
     assert revised == "# 수정본"
+    assert unresolved == []
     assert captured["suggestions"] is None

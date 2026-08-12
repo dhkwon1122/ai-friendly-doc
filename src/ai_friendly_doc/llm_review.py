@@ -57,6 +57,7 @@ DEFAULT_MAX_INPUT_CHARS = 12000
 DEFAULT_TIMEOUT_SECONDS = 60.0
 DEFAULT_MAX_OUTPUT_TOKENS = 4096  # 찾기/수정안(1번 호출)의 최소 예산. 규칙 위반이 많으면 늘어남 (_findings_max_output_tokens 참고)
 FINDINGS_MAX_ATTEMPTS = 2  # 1번 호출(찾기/수정안)이 실패하면 이만큼(최초 시도 포함) 시도한다
+REVISION_REFINE_MAX_ROUNDS = 2  # 수정본 검증 후 "남은 문제 고치기"를 최대 이만큼 반복한다
 
 _HEADING_LEVELS = {f"h{i}": i for i in range(1, 7)}
 
@@ -581,6 +582,96 @@ def generate_revision(page: ConfluencePage, suggestions: list[Suggestion] | None
         return None, "문서 내용이 비어 있습니다."
 
     return _generate_revised_document(page, text, suggestions, model, timeout)
+
+
+def verify_revision_guideline_compliance(page: ConfluencePage, revised_text: str) -> list[Suggestion]:
+    """방금 만든 수정본이 실제로 가이드라인을 지키고 있는지 재검증한다.
+
+    "수정했다고 주장하는 것"과 "실제로 가이드라인을 지키는 것"은 다를 수
+    있다 - REVISION_SYSTEM_PROMPT에 가이드라인 목록과 지시를 넣어도, 특히
+    자체 호스팅하는 소형 모델은 지시를 놓치는 경우가 있다. 그래서 찾기
+    프롬프트(SYSTEM_PROMPT)를 그대로 재사용하되, 원본이 아니라 이번에
+    만든 수정본 텍스트를 검토 대상으로 준다 - review_findings_with_llm과
+    달리 "이미 발견된 문제 목록"은 넘기지 않는다(수정본은 새로 만든
+    문서라 기존 문제 인덱스가 의미 없다). 새로 찾은 문제만 반환한다.
+    """
+    if not is_llm_configured():
+        return []
+
+    model = os.environ.get("LLM_MODEL")
+    if not model:
+        raise LLMReviewError("LLM_BASE_URL은 설정됐지만 LLM_MODEL이 설정되지 않았습니다.")
+
+    max_chars_raw = os.environ.get("LLM_MAX_INPUT_CHARS")
+    max_chars = int(max_chars_raw) if max_chars_raw else DEFAULT_MAX_INPUT_CHARS
+    timeout_raw = os.environ.get("LLM_TIMEOUT_SECONDS")
+    timeout = float(timeout_raw) if timeout_raw else DEFAULT_TIMEOUT_SECONDS
+
+    text = revised_text.strip()
+    if max_chars and len(text) > max_chars:
+        text = text[:max_chars] + "\n\n...(문서가 길어 이하 생략됨)"
+    if not text:
+        return []
+
+    user_content = _build_user_content(page, text, [])
+    max_output_tokens = _findings_max_output_tokens([])
+
+    data: dict | None = None
+    last_error: LLMReviewError | None = None
+    for _attempt in range(FINDINGS_MAX_ATTEMPTS):
+        try:
+            data = _run_findings_call(model, timeout, user_content, max_output_tokens)
+            break
+        except LLMReviewError as e:
+            last_error = e
+    if data is None:
+        raise last_error
+
+    return _to_suggestions(data["new_findings"])
+
+
+def generate_verified_revision(
+    page: ConfluencePage, suggestions: list[Suggestion] | None = None
+) -> tuple[str | None, list[Suggestion], str | None]:
+    """최종 수정본을 만들고, 실제로 가이드라인을 지키는지 검증해서 부족한
+    부분이 있으면 최대 REVISION_REFINE_MAX_ROUNDS번 다시 고치기를
+    반복한다. 검증 없이 내놓은 수정본은 실제로는 가이드라인을 안 지킬 수
+    있어서 신뢰하기 어렵다 - 그래서 만들기만 하고 끝내지 않고, 만든 결과를
+    다시 검토해서 확인한다.
+
+    (revised_document, 끝까지 해결 못한 문제 목록, 실패 사유) 튜플을
+    반환한다. 첫 수정본 생성 자체가 실패하면 (None, [], 실패 사유)를
+    반환한다. 검증/보정 라운드 도중 호출이 실패하면, 그때까지 만든
+    수정본은 버리지 않고 그대로 유지한 채 멈춘다 - 검증 실패가 이미 만든
+    수정본까지 날려버리면 안 되기 때문이다. 남은 문제는 리포트에서 "수정본
+    에서도 해결되지 않음"으로 따로 표시할 수 있게 그대로 반환한다(LLM이
+    끝내 못 고친 부분 - 예: 확인이 필요한 이미지 실제 내용 등 - 을
+    숨기지 않고 드러낸다).
+    """
+    revised_document, error = generate_revision(page, suggestions)
+    if revised_document is None:
+        return None, [], error
+
+    model = os.environ.get("LLM_MODEL")
+    timeout_raw = os.environ.get("LLM_TIMEOUT_SECONDS")
+    timeout = float(timeout_raw) if timeout_raw else DEFAULT_TIMEOUT_SECONDS
+
+    remaining: list[Suggestion] = []
+    for _round in range(REVISION_REFINE_MAX_ROUNDS):
+        try:
+            remaining = verify_revision_guideline_compliance(page, revised_document)
+        except LLMReviewError as e:
+            _logger.warning("수정본 검증 호출 실패: %s", e)
+            break
+        if not remaining:
+            break
+        refined, refine_error = _generate_revised_document(page, revised_document, remaining, model, timeout)
+        if refined is None:
+            _logger.warning("수정본 보정 호출 실패: %s", refine_error)
+            break
+        revised_document = refined
+
+    return revised_document, remaining, None
 
 
 def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> LLMReviewResult:
