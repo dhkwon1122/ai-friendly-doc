@@ -288,6 +288,14 @@ def test_revision_system_prompt_allows_improvements_beyond_found_list():
     assert "요약" in REVISION_SYSTEM_PROMPT
 
 
+def test_revision_system_prompt_does_not_force_intro_conclusion_structure():
+    # 문서마다 서론/결론을 억지로 만들면 오히려 어색해진다 - 요약이 실제로
+    # 필요할 때(맥락 파악이 어려운 경우)만, 앞/뒤 중 자연스러운 쪽에
+    # 넣도록 지시해야 한다.
+    assert "억지로 만들지 마세요" in REVISION_SYSTEM_PROMPT
+    assert "맨 앞이나 맨 뒤 중" in REVISION_SYSTEM_PROMPT
+
+
 # ---- _build_revision_user_content -------------------------------------------
 
 
