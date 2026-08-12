@@ -1,6 +1,6 @@
 import pytest
 
-from ai_friendly_doc.confluence_client import ConfluencePage
+from ai_friendly_doc.confluence_client import Attachment, ConfluencePage
 from ai_friendly_doc.llm_review import (
     LLMReviewError,
     LLMReviewResult,
@@ -80,6 +80,28 @@ def test_plain_text_shows_filename_when_alt_missing():
 def test_plain_text_uses_alt_when_present():
     text = storage_html_to_plain_text('<ac:image ac:alt="다이어그램"><ri:attachment /></ac:image>')
     assert "다이어그램" in text
+
+
+def test_plain_text_adds_download_link_when_image_matches_attachment():
+    # 이 도구는 Confluence에 쓰기 권한이 없어서 이미지 자체를 새 페이지로
+    # 옮겨줄 수 없다 - 대신 실제 첨부파일 목록에서 파일명이 일치하면 사람이
+    # 클릭해서 직접 받을 수 있는 다운로드 링크를 이미지 자리에 붙여준다.
+    html = '<ac:image ac:alt="다이어그램"><ri:attachment ri:filename="diagram.png" /></ac:image>'
+    attachments = [Attachment(filename="diagram.png", download_url="https://confluence.samsungds.net/download/attachments/1/diagram.png")]
+    text = storage_html_to_plain_text(html, attachments=attachments)
+    assert "[diagram.png](https://confluence.samsungds.net/download/attachments/1/diagram.png)" in text
+
+
+def test_plain_text_omits_download_link_when_no_matching_attachment():
+    html = '<ac:image ac:alt="다이어그램"><ri:attachment ri:filename="diagram.png" /></ac:image>'
+    attachments = [Attachment(filename="다른파일.png", download_url="https://example.com/other.png")]
+    text = storage_html_to_plain_text(html, attachments=attachments)
+    assert "다운로드" not in text
+
+
+def test_plain_text_omits_download_link_when_no_attachments_given():
+    text = storage_html_to_plain_text('<ac:image ac:alt="다이어그램"><ri:attachment ri:filename="diagram.png" /></ac:image>')
+    assert "다운로드" not in text
 
 
 def test_plain_text_truncates_when_too_long():

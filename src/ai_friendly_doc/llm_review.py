@@ -47,7 +47,7 @@ import os
 from bs4 import BeautifulSoup, Tag
 from openai import OpenAI
 
-from .confluence_client import ConfluencePage
+from .confluence_client import Attachment, ConfluencePage
 from .guidelines import GUIDELINES, GUIDELINES_BY_ID
 from .rules import Severity, Suggestion
 
@@ -133,6 +133,10 @@ REVISION_SYSTEM_PROMPT = """\
   올려가며 씁니다(항목마다 "1."을 반복하면 안 됩니다). 번호가 없던 순서
   없는 목록은 그대로 "- "를 씁니다. 항목을 추가/삭제하지 않는 한 원본의
   항목 순서도 바꾸지 마세요.
+- **"[이미지: ...]"나 "[이미지 (대체 텍스트 없음...)]"로 시작하는 줄과
+  그 뒤에 괄호로 붙은 "(원본 다운로드: [파일명](링크))" 부분은 절대
+  고치거나 요약하지 말고, 있는 그대로 한 글자도 바꾸지 말고 그대로
+  옮기세요** (링크 URL이 조금이라도 바뀌면 다운로드가 깨집니다).
 - 다른 설명, 인사말, 코드펜스 없이 수정된 문서 본문만 그대로 출력하세요.
 """
 
@@ -159,12 +163,23 @@ def _client() -> OpenAI:
     return OpenAI(base_url=base_url, api_key=api_key)
 
 
-def storage_html_to_plain_text(storage_html: str, max_chars: int | None = DEFAULT_MAX_INPUT_CHARS) -> str:
+def storage_html_to_plain_text(
+    storage_html: str,
+    max_chars: int | None = DEFAULT_MAX_INPUT_CHARS,
+    attachments: list[Attachment] | None = None,
+) -> str:
     """Confluence storage format(XHTML)을 LLM 프롬프트에 넣기 좋은 평문으로 바꾼다.
 
     parser.py의 ParsedDoc과 달리 카테고리별로 나뉘지 않고 문서에 등장하는
     순서 그대로 이어붙인 텍스트를 만든다 (LLM이 글의 흐름을 볼 수 있도록).
+
+    attachments를 넘기면, 본문의 이미지가 실제 첨부파일과 파일명이 일치할
+    때 그 이미지 자리에 실제 다운로드 링크를 같이 붙인다 - 이 도구는
+    Confluence에 쓰기 권한이 없어서 이미지 자체를 새 페이지로 옮겨줄 수는
+    없지만(첨부파일은 페이지별로 따로 올려야 함), 사람이 클릭 한 번으로
+    원본을 받아서 직접 다시 첨부할 수 있게 돕는다.
     """
+    attachments_by_filename = {a.filename: a.download_url for a in (attachments or [])}
     soup = BeautifulSoup(storage_html, "html.parser")
     lines: list[str] = []
 
@@ -202,7 +217,7 @@ def storage_html_to_plain_text(storage_html: str, max_chars: int | None = DEFAUL
                     if any(cells):
                         lines.append("| " + " | ".join(cells) + " |")
             elif name in ("ac:image", "img"):
-                lines.append(_image_line(child, name))
+                lines.append(_image_line(child, name, attachments_by_filename))
             else:
                 walk(child)
 
@@ -213,18 +228,29 @@ def storage_html_to_plain_text(storage_html: str, max_chars: int | None = DEFAUL
     return text
 
 
-def _image_line(el: Tag, name: str) -> str:
+def _image_line(el: Tag, name: str, attachments_by_filename: dict[str, str]) -> str:
     alt = el.get("ac:alt") or el.get("alt") or ""
-    if alt:
-        return f"[이미지: {alt}]"
     filename = None
     filename_el = el.find(["ri:attachment", "ri:url"])
     if filename_el is not None:
         filename = filename_el.get("ri:filename") or filename_el.get("ri:value")
     elif name == "img":
         filename = el.get("src")
-    marker = f", 파일명: {filename}" if filename else ""
-    return f"[이미지 (대체 텍스트 없음{marker})]"
+
+    if alt:
+        line = f"[이미지: {alt}]"
+    else:
+        marker = f", 파일명: {filename}" if filename else ""
+        line = f"[이미지 (대체 텍스트 없음{marker})]"
+
+    # 첨부파일 목록에서 같은 파일명을 찾으면 실제 다운로드 링크를 마크다운
+    # 링크 문법으로 붙인다 - confluence_storage.py가 이 문법을 인식해서
+    # 클릭 가능한 <a> 태그로 바꿔주므로, 사람이 클릭 한 번으로 원본을
+    # 받아서 새 페이지에 직접 다시 첨부할 수 있다.
+    download_url = attachments_by_filename.get(filename) if filename else None
+    if download_url:
+        line += f" (원본 다운로드: [{filename}]({download_url}))"
+    return line
 
 
 def _strip_code_fence(text: str) -> str:
@@ -474,7 +500,7 @@ def review_findings_with_llm(page: ConfluencePage, rule_suggestions: list[Sugges
     timeout_raw = os.environ.get("LLM_TIMEOUT_SECONDS")
     timeout = float(timeout_raw) if timeout_raw else DEFAULT_TIMEOUT_SECONDS
 
-    text = storage_html_to_plain_text(page.storage_html, max_chars=max_chars)
+    text = storage_html_to_plain_text(page.storage_html, max_chars=max_chars, attachments=page.attachments)
     if not text.strip():
         return list(rule_suggestions)
 
@@ -521,7 +547,7 @@ def generate_revision(page: ConfluencePage, suggestions: list[Suggestion] | None
     timeout_raw = os.environ.get("LLM_TIMEOUT_SECONDS")
     timeout = float(timeout_raw) if timeout_raw else DEFAULT_TIMEOUT_SECONDS
 
-    text = storage_html_to_plain_text(page.storage_html, max_chars=max_chars)
+    text = storage_html_to_plain_text(page.storage_html, max_chars=max_chars, attachments=page.attachments)
     if not text.strip():
         return None, "문서 내용이 비어 있습니다."
 
@@ -558,7 +584,7 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
     # suggestion이 붙는 걸 막을 수 있다.
     max_chars_raw = os.environ.get("LLM_MAX_INPUT_CHARS")
     max_chars = int(max_chars_raw) if max_chars_raw else DEFAULT_MAX_INPUT_CHARS
-    if not storage_html_to_plain_text(page.storage_html, max_chars=max_chars).strip():
+    if not storage_html_to_plain_text(page.storage_html, max_chars=max_chars, attachments=page.attachments).strip():
         return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
 
     all_suggestions = review_findings_with_llm(page, rule_suggestions)

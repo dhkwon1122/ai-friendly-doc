@@ -425,7 +425,12 @@ def analyze_fetch(request: Request, mode: str = Form(...), value: str = Form(...
         )
 
     fetched_pages = [
-        {"page": page, "original_document": storage_html_to_plain_text(page.storage_html, max_chars=None)}
+        {
+            "page": page,
+            "original_document": storage_html_to_plain_text(
+                page.storage_html, max_chars=None, attachments=page.attachments
+            ),
+        }
         for page in pages
     ]
     return render(
@@ -554,7 +559,9 @@ def analyze_revise(
                 # 안 거쳤으면 findings 자체가 검증되지 않았으므로 가이드라인
                 # 점수는 "확인 불가"로 남아야 한다.
                 guideline_score=score_document(suggestions, llm_configured=page.id in suggestions_by_page),
-                original_document=storage_html_to_plain_text(page.storage_html, max_chars=None),
+                original_document=storage_html_to_plain_text(
+                    page.storage_html, max_chars=None, attachments=page.attachments
+                ),
                 revised_document=revised_document,
             )
         )
