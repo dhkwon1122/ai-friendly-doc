@@ -73,9 +73,10 @@ def test_send_report_email_posts_plain_json_body(monkeypatch):
 
     send_report_email("someone@example.com", subject="분석 리포트", body_html="<p>본문 내용</p>")
 
-    # userID는 requests의 params= kwarg가 아니라 URL 쿼리스트링에 직접
+    # userId는 requests의 params= kwarg가 아니라 URL 쿼리스트링에 직접
     # 실려야 한다 (실제 테스트로 params= 방식은 API가 못 읽는 것으로 확인됨).
-    assert captured["url"] == "https://openapi.samsung.net/mail/api/v2.0/mails/send?userID=user-456"
+    # 파라미터 이름도 "userID"가 아니라 "userId"여야 한다.
+    assert captured["url"] == "https://openapi.samsung.net/mail/api/v2.0/mails/send?userId=user-456"
     assert captured["headers"]["Authorization"] == "Bearer test-token"
     assert captured["headers"]["System-ID"] == "sys-123"
     assert captured["headers"]["Content-Type"] == "application/json;charset=utf-8"
@@ -110,7 +111,7 @@ def test_send_report_email_defaults_sender_to_user_id(monkeypatch):
 
 
 def test_send_report_email_url_encodes_user_id_in_query_string(monkeypatch):
-    # userID에 URL에서 특별한 의미를 갖는 문자(&, = 등)가 섞여 있으면
+    # userId에 URL에서 특별한 의미를 갖는 문자(&, = 등)가 섞여 있으면
     # 쿼리스트링이 깨질 수 있으니 인코딩되는지 확인한다.
     _set_full_config(monkeypatch, MAIL_API_USER_ID="user&name=x")
 
@@ -124,7 +125,7 @@ def test_send_report_email_url_encodes_user_id_in_query_string(monkeypatch):
 
     send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
 
-    assert captured["url"].endswith("?userID=user%26name%3Dx")
+    assert captured["url"].endswith("?userId=user%26name%3Dx")
 
 
 def test_send_report_email_uses_custom_base_url(monkeypatch):
@@ -140,7 +141,7 @@ def test_send_report_email_uses_custom_base_url(monkeypatch):
 
     send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
 
-    assert captured["url"] == "https://mail.internal.example.com/api/v9/mails/send?userID=user-456"
+    assert captured["url"] == "https://mail.internal.example.com/api/v9/mails/send?userId=user-456"
 
 
 def test_send_report_email_raises_on_http_error_status(monkeypatch):
@@ -191,7 +192,7 @@ def test_send_report_email_strips_whitespace_from_env_values(monkeypatch):
 
     assert captured["headers"]["Authorization"] == "Bearer test-token"
     assert captured["headers"]["System-ID"] == "sys-123"
-    assert captured["url"].endswith("?userID=user-456")
+    assert captured["url"].endswith("?userId=user-456")
 
 
 def test_send_report_email_no_proxy_forces_proxies_none(monkeypatch):
@@ -291,7 +292,7 @@ def test_send_report_email_no_proxy_bypasses_real_proxy_env_var(monkeypatch):
         send_report_email("someone@example.com", subject="제목", body_html="<p>본문</p>")
 
         assert received.get("hit") is True
-        assert received["path"] == "/mails/send?userID=user-456"
+        assert received["path"] == "/mails/send?userId=user-456"
         assert received["content_type"] == "application/json;charset=utf-8"
         assert received["body"]["subject"] == "제목"
         assert received["body"]["contents"] == "<p>본문</p>"

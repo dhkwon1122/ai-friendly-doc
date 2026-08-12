@@ -9,7 +9,9 @@ from ai_friendly_doc.llm_review import (
     _build_user_content,
     _parse_llm_response,
     _to_suggestions,
+    generate_revision,
     is_llm_configured,
+    review_findings_with_llm,
     review_with_llm,
     storage_html_to_plain_text,
 )
@@ -345,6 +347,78 @@ def test_review_with_llm_skips_empty_document(monkeypatch):
     result = review_with_llm(make_page(""), rule_suggestions=rule_suggestions)
     assert result == LLMReviewResult(suggestions=rule_suggestions, revised_document=None)
     assert fake_client.chat.completions.last_kwargs is None
+
+
+# ---- review_findings_with_llm / generate_revision (독립 호출) ----------
+
+
+def test_review_findings_with_llm_returns_rule_suggestions_unchanged_when_not_configured(monkeypatch):
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    rule_suggestions = [make_rule_suggestion(suggestion="원래 조언")]
+    result = review_findings_with_llm(make_page(), rule_suggestions=rule_suggestions)
+    assert result == rule_suggestions
+
+
+def test_review_findings_with_llm_does_not_call_revision(monkeypatch):
+    # "AI 분석" 버튼은 findings만 실행하고 수정본 생성 호출은 하지 않아야
+    # 한다 - 그래야 두 단계가 독립적으로 재시도 가능하다.
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    fake_client = _FakeClient(content='{"new_findings": [], "rule_fixes": []}')
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    review_findings_with_llm(make_page("<p>본문</p>"), rule_suggestions=[])
+
+    assert len(fake_client.chat.completions.calls) == 1
+
+
+def test_generate_revision_returns_error_when_not_configured(monkeypatch):
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    revised, error = generate_revision(make_page(), [])
+    assert revised is None
+    assert error is not None
+
+
+def test_generate_revision_returns_error_when_model_missing(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    revised, error = generate_revision(make_page(), [])
+    assert revised is None
+    assert "LLM_MODEL" in error
+
+
+def test_generate_revision_succeeds_independently_of_findings(monkeypatch):
+    # 최종 수정본 제안 버튼은 findings 없이(빈 리스트) 호출해도 동작해야
+    # 한다 - AI 분석을 먼저 안 돌리고 바로 눌러도 된다는 뜻.
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    fake_client = _FakeClient(content="# 다시 쓴 문서")
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    revised, error = generate_revision(make_page("<p>본문</p>"), [])
+
+    assert revised == "# 다시 쓴 문서"
+    assert error is None
+    assert len(fake_client.chat.completions.calls) == 1
+
+
+def test_generate_revision_can_retry_after_failure_without_findings_call(monkeypatch):
+    # "실패해도 그것만 다시 시도" 요구사항: 실패한 뒤 다시 호출해도
+    # findings 호출 없이 generate_revision만 다시 도는지 확인한다.
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+
+    failing_client = _FakeClient(exc=ConnectionError("일시적 오류"))
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: failing_client)
+    revised, error = generate_revision(make_page("<p>본문</p>"), [])
+    assert revised is None
+    assert "일시적 오류" in error
+
+    succeeding_client = _FakeClient(content="# 재시도 성공")
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: succeeding_client)
+    revised, error = generate_revision(make_page("<p>본문</p>"), [])
+    assert revised == "# 재시도 성공"
+    assert error is None
 
 
 def test_review_with_llm_findings_call_uses_fixed_budget_regardless_of_document_length(monkeypatch):

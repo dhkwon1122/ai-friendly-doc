@@ -420,31 +420,25 @@ def _generate_revised_document(
     return revised, None
 
 
-def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> LLMReviewResult:
-    """설정된 LLM으로 페이지 내용을 심층 검토한다.
+def review_findings_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> list[Suggestion]:
+    """찾기/수정안 채우기 LLM 호출만 수행한다 (최종 수정본 생성은 제외 -
+    generate_revision() 참고). 웹 UI의 "AI 분석" 버튼이 이 함수만 쓴다 -
+    최종 수정본 생성(가장 자주 실패하는 부분)과 분리해서, 이쪽만 먼저 빠르게
+    끝내고 결과를 보여줄 수 있게 한다.
 
     rule_suggestions를 넘기면, 그 각각에 대해 LLM이 실제 문서 내용을 참고해
     만든 구체적인(복사-붙여넣기 가능한) 수정안으로 suggestion 필드를 갱신하고,
     거기에 LLM이 새로 찾은 문제들을 더해서 반환한다. rule_suggestions를 안
     넘기면 새로 찾은 문제들만 반환한다 (규칙 없이 LLM 검토만 쓰는 경우).
 
-    이어서 별도 호출로 문서 전체를 다시 쓴 수정본(revised_document)도 만들어
-    본다. 이 두 번째 호출은 출력이 길어 실패하기 쉬우므로 best-effort로
-    처리한다 - 실패해도 예외를 던지지 않고 revised_document만 None으로 둔다
-    (첫 번째 호출에서 이미 얻은 suggestions는 그대로 유지된다). 대신 실패
-    사유를 `llm-revision-error` rule_id를 가진 info 등급 suggestion으로
-    추가해서, 리포트에서 왜 수정본이 없는지 바로 확인할 수 있게 한다.
-
-    LLM_BASE_URL이 없으면 rule_suggestions를 그대로(원래 조언 형태로) 담고
-    revised_document는 None인 결과를 반환한다. 그 외 설정 누락이나 첫 번째
-    호출(찾기/수정안) 자체의 실패는 최대 FINDINGS_MAX_ATTEMPTS번 재시도해 본
-    뒤 LLMReviewError로 감싸서 던진다 (호출자가 나머지 규칙 기반 결과는
-    살리고 이 부분만 실패로 표시할 수 있도록).
+    LLM_BASE_URL이 없으면 rule_suggestions를 그대로(원래 조언 형태로)
+    반환한다. 그 외 설정 누락이나 호출 자체의 실패는 최대
+    FINDINGS_MAX_ATTEMPTS번 재시도해 본 뒤 LLMReviewError로 감싸서 던진다.
     """
     rule_suggestions = rule_suggestions or []
 
     if not is_llm_configured():
-        return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
+        return list(rule_suggestions)
 
     model = os.environ.get("LLM_MODEL")
     if not model:
@@ -457,7 +451,7 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
 
     text = storage_html_to_plain_text(page.storage_html, max_chars=max_chars)
     if not text.strip():
-        return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
+        return list(rule_suggestions)
 
     user_content = _build_user_content(page, text, rule_suggestions)
     max_output_tokens = _findings_max_output_tokens(rule_suggestions)
@@ -475,9 +469,75 @@ def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | N
 
     updated_rule_suggestions = _apply_rule_fixes(rule_suggestions, data["rule_fixes"])
     new_findings = _to_suggestions(data["new_findings"])
-    all_suggestions = updated_rule_suggestions + new_findings
+    return updated_rule_suggestions + new_findings
 
-    revised_document, revision_error = _generate_revised_document(page, text, all_suggestions, model, timeout)
+
+def generate_revision(page: ConfluencePage, suggestions: list[Suggestion] | None = None) -> tuple[str | None, str | None]:
+    """최종 수정본만 별도로 (재)생성한다. 웹 UI의 "최종 수정본 제안" 버튼이
+    이 함수를 쓴다 - findings 호출과 독립적이라, 실패해도 findings 결과를
+    다시 만들 필요 없이 이 호출만 다시 시도할 수 있다.
+
+    (revised_document, 실패 사유) 튜플을 반환한다 - 성공하면 실패 사유는
+    None, 실패하면(LLM 미설정 포함) revised_document가 None이고 실패
+    사유에 원인 문자열이 담긴다. review_with_llm()과 달리 예외를 던지지
+    않는다 - 항상 이 튜플로 결과를 알린다.
+    """
+    suggestions = suggestions or []
+
+    if not is_llm_configured():
+        return None, "LLM이 설정되어 있지 않습니다 (LLM_BASE_URL 미설정)."
+
+    model = os.environ.get("LLM_MODEL")
+    if not model:
+        return None, "LLM_BASE_URL은 설정됐지만 LLM_MODEL이 설정되지 않았습니다."
+
+    max_chars_raw = os.environ.get("LLM_MAX_INPUT_CHARS")
+    max_chars = int(max_chars_raw) if max_chars_raw else DEFAULT_MAX_INPUT_CHARS
+    timeout_raw = os.environ.get("LLM_TIMEOUT_SECONDS")
+    timeout = float(timeout_raw) if timeout_raw else DEFAULT_TIMEOUT_SECONDS
+
+    text = storage_html_to_plain_text(page.storage_html, max_chars=max_chars)
+    if not text.strip():
+        return None, "문서 내용이 비어 있습니다."
+
+    return _generate_revised_document(page, text, suggestions, model, timeout)
+
+
+def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> LLMReviewResult:
+    """찾기/수정안(review_findings_with_llm)과 최종 수정본(generate_revision)을
+    한 번에 모두 수행한다. CLI처럼 한 번의 호출로 전부 필요한 경우에 쓴다
+    (웹 UI는 "AI 분석"과 "최종 수정본 제안"을 독립된 버튼으로 나눠서 각각
+    review_findings_with_llm/generate_revision을 따로 호출한다).
+
+    두 번째 호출(수정본 생성)은 출력이 길어 실패하기 쉬우므로 best-effort로
+    처리한다 - 실패해도 예외를 던지지 않고 revised_document만 None으로 둔다
+    (첫 번째 호출에서 이미 얻은 suggestions는 그대로 유지된다). 대신 실패
+    사유를 `llm-revision-error` rule_id를 가진 info 등급 suggestion으로
+    추가해서, 리포트에서 왜 수정본이 없는지 바로 확인할 수 있게 한다.
+
+    LLM_BASE_URL이 없으면 rule_suggestions를 그대로(원래 조언 형태로) 담고
+    revised_document는 None인 결과를 반환한다. 그 외 설정 누락이나 첫 번째
+    호출(찾기/수정안) 자체의 실패는 review_findings_with_llm이 최대
+    FINDINGS_MAX_ATTEMPTS번 재시도해 본 뒤 LLMReviewError로 던진다.
+    """
+    rule_suggestions = rule_suggestions or []
+
+    if not is_llm_configured():
+        return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
+
+    # 문서 내용이 비어 있으면 findings/revision 둘 다 시도할 이유가 없다 -
+    # review_findings_with_llm/generate_revision이 각자 이 경우를 조용히
+    # 처리하지만(빈 문서를 계속 재시도할 이유가 없어서 에러로 취급하지
+    # 않는다), 여기서 미리 걸러야 generate_revision이 "문서 내용이 비어
+    # 있습니다"를 revision_error로 반환해 불필요한 llm-revision-error
+    # suggestion이 붙는 걸 막을 수 있다.
+    max_chars_raw = os.environ.get("LLM_MAX_INPUT_CHARS")
+    max_chars = int(max_chars_raw) if max_chars_raw else DEFAULT_MAX_INPUT_CHARS
+    if not storage_html_to_plain_text(page.storage_html, max_chars=max_chars).strip():
+        return LLMReviewResult(suggestions=list(rule_suggestions), revised_document=None)
+
+    all_suggestions = review_findings_with_llm(page, rule_suggestions)
+    revised_document, revision_error = generate_revision(page, all_suggestions)
     if revision_error:
         all_suggestions = all_suggestions + [
             Suggestion(
