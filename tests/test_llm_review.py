@@ -2,6 +2,7 @@ import pytest
 
 from ai_friendly_doc.confluence_client import Attachment, ConfluencePage
 from ai_friendly_doc.llm_review import (
+    REVISION_SYSTEM_PROMPT,
     LLMReviewError,
     LLMReviewResult,
     _apply_rule_fixes,
@@ -254,6 +255,35 @@ def test_build_user_content_omits_findings_section_when_empty():
     page = make_page()
     content = _build_user_content(page, "본문 텍스트", [])
     assert "구조 검사로 발견된" not in content
+
+
+# ---- REVISION_SYSTEM_PROMPT -------------------------------------------------
+
+
+def test_revision_system_prompt_includes_full_guideline_checklist():
+    # 예전에는 최종 수정본 생성 프롬프트가 "이미 발견된 문제"만 알고
+    # 가이드라인 목록 자체는 몰랐다 - 그래서 규칙/찾기 단계가 못 잡은
+    # 가이드라인(예: 표 캡션, 문서 요약)은 수정본에 절대 반영되지 않았다.
+    # 이제는 찾기 프롬프트(SYSTEM_PROMPT)와 마찬가지로 전체 가이드라인
+    # 목록을 알려준다.
+    assert "core-2: 이미지/표 설명 표기" in REVISION_SYSTEM_PROMPT
+    assert "core-7: 문서의 자체 완결성" in REVISION_SYSTEM_PROMPT
+    assert "extra-1: 서론/본론/결론 흐름으로 작성" in REVISION_SYSTEM_PROMPT
+
+
+def test_revision_system_prompt_excludes_llm_invisible_guidelines():
+    # extra-2/3/7은 LLM에게 넘기는 평문에서 이미 빠진 정보(원본 HTML의
+    # colspan/스타일 태그 등)로만 판별 가능해서, 찾기 프롬프트와 마찬가지로
+    # 수정본 프롬프트에서도 LLM에게 새로 찾아달라고 요청하지 않는다.
+    assert "extra-2:" not in REVISION_SYSTEM_PROMPT
+    assert "extra-3:" not in REVISION_SYSTEM_PROMPT
+    assert "extra-7:" not in REVISION_SYSTEM_PROMPT
+
+
+def test_revision_system_prompt_allows_improvements_beyond_found_list():
+    assert "목록에 없더라도" in REVISION_SYSTEM_PROMPT
+    assert "캡션" in REVISION_SYSTEM_PROMPT
+    assert "요약" in REVISION_SYSTEM_PROMPT
 
 
 # ---- _build_revision_user_content -------------------------------------------
