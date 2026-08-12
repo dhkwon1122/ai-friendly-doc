@@ -244,9 +244,10 @@ def _image_line(el: Tag, name: str, attachments_by_filename: dict[str, str]) -> 
         line = f"[이미지 (대체 텍스트 없음{marker})]"
 
     # 첨부파일 목록에서 같은 파일명을 찾으면 실제 다운로드 링크를 마크다운
-    # 링크 문법으로 붙인다 - confluence_storage.py가 이 문법을 인식해서
-    # 클릭 가능한 <a> 태그로 바꿔주므로, 사람이 클릭 한 번으로 원본을
-    # 받아서 새 페이지에 직접 다시 첨부할 수 있다.
+    # 링크 문법으로 붙인다 - 이 텍스트는 그대로 Confluence Markdown
+    # 매크로(confluence_markdown_macro.py)에 감싸져 클릭 가능한 링크로
+    # 렌더링되므로, 사람이 클릭 한 번으로 원본을 받아서 새 페이지에
+    # 직접 다시 첨부할 수 있다.
     download_url = attachments_by_filename.get(filename) if filename else None
     if download_url:
         line += f" (원본 다운로드: [{filename}]({download_url}))"

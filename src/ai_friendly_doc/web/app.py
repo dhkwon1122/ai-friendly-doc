@@ -18,7 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from ..analyzer import PageReport, analyze_page, analyze_page_findings, generate_page_revision
 from ..config import DEFAULT_WEB_BASE_URL, ConfluenceConfig, parse_bool_env
 from ..confluence_client import ConfluenceClient
-from ..confluence_storage import markdown_to_confluence_storage
+from ..confluence_markdown_macro import escape_markdown_link_text, markdown_to_confluence_markdown_macro
 from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES, score_document
 from ..llm_review import storage_html_to_plain_text
 from ..report import render_report
@@ -330,16 +330,22 @@ def _build_email_subject(revisions: list[dict]) -> str:
 
 def _render_copyable_revision_block(revisions: list[dict]) -> str:
     """이메일 본문 맨 앞에 넣을, "그대로 복사해서 Confluence 새 페이지 소스에
-    붙여넣기" 위한 블록을 만든다. 최종 수정본을 Confluence storage format
-    (XHTML)으로 바꿔서, 사람이 읽는 서식이 아니라 텍스트 그대로 보여준다 -
-    그래야 전체 선택 → 복사 → Confluence 소스 편집기에 붙여넣기가 그대로
-    통한다(렌더링된 서식을 복사하면 원본 마크업이 아니라 브라우저가 임의로
-    변환한 HTML이 복사돼서 깨지기 쉽다).
+    붙여넣기" 위한 블록을 만든다. 최종 수정본(평문 마크다운)을 Confluence의
+    내장 "Markdown" 매크로로 감싸서, 사람이 읽는 서식이 아니라 매크로 XML
+    텍스트 그대로 보여준다 - 그래야 전체 선택 → 복사 → Confluence 소스
+    편집기에 붙여넣기가 그대로 통한다(렌더링된 서식을 복사하면 원본 마크업이
+    아니라 브라우저가 임의로 변환한 HTML이 복사돼서 깨지기 쉽다).
+
+    예전에는 우리가 직접 마크다운을 Confluence storage format(XHTML)
+    태그로 변환했는데(구 confluence_storage.py), 표/중첩 목록처럼 복잡한
+    구조에서 실제 붙여넣기 결과가 원본과 다르게 재현되는 경우가 많았다.
+    지금은 변환을 직접 하지 않고 Markdown 매크로에 평문을 그대로 맡겨서,
+    렌더링은 Confluence 자신의 마크다운 파서가 담당하게 한다.
 
     소스 편집기는 페이지 본문만 편집하고 제목은 별도 입력란이다 - 페이지
     제목은 원본 문서 제목을 그대로 쓰면 되므로 별도 제안 제목은 안내하지
-    않는다. 원본 문서 링크는 본문에 포함돼야 의미가 있으므로, 복사용 소스
-    맨 위에 실제 Confluence storage 문단으로 끼워 넣고, 그 바로 아래에
+    않는다. 원본 문서 링크는 본문에 포함돼야 의미가 있으므로, 매크로에
+    감싸기 전 마크다운 맨 위에 링크 문법으로 끼워 넣고, 그 바로 아래에
     수정본 내용이 이어지게 한다.
     """
     blocks_with_content = [r for r in revisions if (r.get("revised_document") or "").strip()]
@@ -355,27 +361,28 @@ def _render_copyable_revision_block(revisions: list[dict]) -> str:
         "적용된 페이지가 만들어집니다.</p>",
     ]
     for revision in blocks_with_content:
-        storage = markdown_to_confluence_storage(revision["revised_document"])
-        if not storage.strip():
-            continue
+        revised_document = revision["revised_document"]
         title = revision["title"]
         web_url = revision.get("web_url") or ""
 
-        # 원본 문서 링크는 본문 안에 있어야 의미가 있으므로, 소스 맨 위에
-        # 실제 Confluence storage 문단으로 끼워 넣는다(markdown_to_confluence_storage
-        # 는 이 링크에 대해 모르므로 여기서 직접 조립). 개행 없이 이어붙여서
-        # 링크 문단 바로 아래에 수정본 내용이 시작되게 한다.
+        # 원본 문서 링크는 본문 안에 있어야 의미가 있으므로, 매크로로 감싸기
+        # 전 마크다운 맨 위에 마크다운 링크 문법 그대로 끼워 넣는다 -
+        # Confluence의 마크다운 파서가 렌더링 시 실제 링크로 바꿔준다.
         if web_url:
-            link_html = html_module.escape(web_url)
-            source_with_link = f'<p><em>원본 문서: <a href="{link_html}">{html_module.escape(title)}</a></em></p>{storage}'
+            link_line = f"*원본 문서: [{escape_markdown_link_text(title)}]({web_url})*"
+            source_with_link = f"{link_line}\n\n{revised_document}"
         else:
-            source_with_link = storage
+            source_with_link = revised_document
+
+        macro = markdown_to_confluence_markdown_macro(source_with_link)
+        if not macro.strip():
+            continue
 
         parts.append(f"<h3>{html_module.escape(title)}</h3>")
         parts.append(
             '<pre style="white-space:pre-wrap;word-break:break-word;background:#f4f5f7;'
             'border:1px solid #ddd;border-radius:6px;padding:0.75rem;font-size:0.85rem;">'
-            f"{html_module.escape(source_with_link)}</pre>"
+            f"{html_module.escape(macro)}</pre>"
         )
     parts.append("</div><hr>")
     return "".join(parts)
