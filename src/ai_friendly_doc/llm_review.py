@@ -355,8 +355,10 @@ def _build_revision_user_content(page: ConfluencePage, text: str, suggestions: l
 def _revision_max_output_tokens(text: str) -> int:
     # 문서 전체를 거의 그대로(+ 수정 반영) 다시 써야 해서, 출력 길이가 입력
     # 길이에 비례한다. 한글은 토큰당 글자 수가 영어보다 적어(토큰을 더 많이
-    # 씀) 글자당 2토큰으로 넉넉하게 잡는다.
-    computed = max(DEFAULT_MAX_OUTPUT_TOKENS, len(text) * 2 + 1024)
+    # 씀) 글자당 3토큰으로 넉넉하게 잡는다 - 수정 반영 과정에서 원본보다
+    # 늘어나는 경우(설명 보강, 목록/표 추가 등)도 흔해서 원본 길이만 보고
+    # 너무 빠듯하게 잡으면 실제로 자주 잘린다.
+    computed = max(DEFAULT_MAX_OUTPUT_TOKENS, len(text) * 3 + 2048)
 
     max_output_tokens_raw = os.environ.get("LLM_MAX_OUTPUT_TOKENS")
     if not max_output_tokens_raw:
@@ -407,9 +409,17 @@ def _generate_revised_document(
 
     choice = response.choices[0]
     if getattr(choice, "finish_reason", None) == "length":
+        # 여기 걸렸다는 건 "우리가 요청한 max_tokens"에 먼저 도달해서 서버가
+        # 응답을 끊었다는 뜻이다 - 모델의 실제 최대 컨텍스트 길이 자체를
+        # 넘은 게 아니다(그랬다면 아래 except 절에서 요청 자체가 거부됐을
+        # 것이다). 그래서 해결책은 반대로 LLM_MAX_OUTPUT_TOKENS를 "늘리는"
+        # 것이다 - 모델이 감당 가능한 한도(서버의 --max-model-len 등) 안에서.
         error = (
             f"응답이 최대 토큰({max_output_tokens}) 제한으로 중간에 잘렸습니다. "
-            "LLM_MAX_OUTPUT_TOKENS를 모델의 최대 컨텍스트 길이보다 작게 조정해보세요."
+            ".env의 LLM_MAX_OUTPUT_TOKENS 값을 지금보다 늘려보세요(모델이 "
+            "감당 가능한 최대 컨텍스트 길이 안에서). 값을 너무 크게 잡으면 "
+            "이번처럼 잘리는 대신 요청 자체가 거부되는 다른 오류로 바뀌니, "
+            "그 오류 메시지에 나오는 한도를 참고해서 다시 낮추면 됩니다."
         )
         _logger.warning("수정본 생성 응답 잘림 (max_tokens=%s)", max_output_tokens)
         return None, error
