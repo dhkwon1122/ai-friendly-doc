@@ -72,13 +72,34 @@ def test_ordered_list_ends_when_followed_by_unrelated_paragraph():
 def test_ordered_list_resumes_numbering_with_start_attr_when_table_intervenes():
     # 표/문단처럼 목록 항목이 아닌 다른 블록이 번호 항목 사이에 끼는 경우는
     # 미리 전부 예측해서 하나의 <ol>로 병합할 수 없다(끼어들 수 있는 블록
-    # 종류가 너무 다양함). 그래서 별도의 <ol>로 갈라지더라도, 소스에 적힌
-    # 실제 번호("2. ")를 읽어 <ol start="2">로 이어붙여서 Confluence가
-    # 항상 1번부터 다시 매기는 문제 자체를 막아야 한다.
+    # 종류가 너무 다양함). 그래서 별도의 <ol>로 갈라지더라도, 직접 계산한
+    # 번호를 <ol start="2">로 이어붙여서 Confluence가 항상 1번부터 다시
+    # 매기는 문제 자체를 막아야 한다.
     md = "1. 첫 번째 단계\n\n| 항목 | 값 |\n| --- | --- |\n| a | 1 |\n\n2. 두 번째 단계\n3. 세 번째 단계"
     result = markdown_to_confluence_storage(md)
     assert "<ol><li>첫 번째 단계</li></ol>" in result
     assert '<ol start="2"><li>두 번째 단계</li><li>세 번째 단계</li></ol>' in result
+
+
+def test_ordered_list_resumes_numbering_even_when_source_repeats_1():
+    # 자체 호스팅하는 소형 모델일수록 표/하위 목록으로 항목이 끊기면 번호를
+    # 제대로 못 올리고 "1."을 계속 반복해서 쓰는 경우가 흔하다 - 그래서
+    # 소스에 적힌 숫자를 실제 번호로 신뢰하면 안 되고, 이 모듈이 직접
+    # 순서를 세서 번호를 매겨야 한다(항목 구분에만 그 숫자를 쓴다).
+    md = "1. 첫 번째 단계\n\n| 항목 | 값 |\n| --- | --- |\n| a | 1 |\n\n1. 두 번째 단계\n1. 세 번째 단계"
+    result = markdown_to_confluence_storage(md)
+    assert "<ol><li>첫 번째 단계</li></ol>" in result
+    assert '<ol start="2"><li>두 번째 단계</li><li>세 번째 단계</li></ol>' in result
+
+
+def test_ordered_list_numbering_resets_after_heading():
+    # 제목(#, ##...)이 나오면 새로운 주제로 보고 번호를 1부터 다시
+    # 시작해야 한다 - 이전 목록과 이어 붙이면 안 된다.
+    md = "1. 첫 단계\n1. 두 번째 단계\n\n## 다른 섹션\n\n1. 새 항목1\n1. 새 항목2"
+    result = markdown_to_confluence_storage(md)
+    assert "<ol><li>첫 단계</li><li>두 번째 단계</li></ol>" in result
+    assert "<ol><li>새 항목1</li><li>새 항목2</li></ol>" in result
+    assert "start=" not in result
 
 
 def test_ordered_list_resumes_numbering_with_start_attr_when_paragraph_intervenes():
