@@ -71,6 +71,18 @@ def test_plain_text_includes_table_rows():
     assert "| a | 1 |" in text
 
 
+def test_plain_text_includes_table_separator_row_after_header():
+    # 마크다운 표는 헤더 바로 다음 줄에 "|---|---|" 구분선이 없으면 표로
+    # 인식되지 않고 그냥 파이프가 섞인 텍스트로 취급된다(대부분의 마크다운
+    # 파서가 GFM 표 문법을 따름) - 그러면 줄 사이 개행도 소프트 브레이크로
+    # 접혀서 표 전체가 한 줄로 뭉개져 보인다.
+    html = "<table><tbody><tr><th>이름</th><th>나이</th><th>직급</th></tr><tr><td>a</td><td>1</td><td>b</td></tr></tbody></table>"
+    text = storage_html_to_plain_text(html)
+    lines = text.splitlines()
+    header_idx = lines.index("| 이름 | 나이 | 직급 |")
+    assert lines[header_idx + 1] == "|---|---|---|"
+
+
 def test_plain_text_shows_filename_when_alt_missing():
     text = storage_html_to_plain_text('<ac:image><ri:attachment ri:filename="deploy-diagram.png" /></ac:image>')
     assert "대체 텍스트 없음" in text
