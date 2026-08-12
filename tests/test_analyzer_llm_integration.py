@@ -1,4 +1,4 @@
-from ai_friendly_doc.analyzer import analyze_page
+from ai_friendly_doc.analyzer import analyze_page, analyze_page_findings, generate_page_revision
 from ai_friendly_doc.confluence_client import ConfluencePage
 from ai_friendly_doc.llm_review import LLMReviewResult
 from ai_friendly_doc.rules import Severity, Suggestion
@@ -72,3 +72,89 @@ def test_analyze_page_adds_error_suggestion_when_llm_call_fails(monkeypatch):
 
     rule_based = [s for s in report.suggestions if s.rule_id == "missing-h1"]
     assert len(rule_based) == 1
+
+
+# ---- analyze_page_findings / generate_page_revision (독립 호출, "AI 분석" /
+# "최종 수정본 제안" 버튼용) --------------------------------------------------
+
+
+def test_analyze_page_findings_never_generates_revised_document(monkeypatch):
+    # "AI 분석" 버튼은 findings만 하고 수정본 생성 호출 자체를 하지 않아야
+    # 한다 - review_with_llm이 아니라 review_findings_with_llm을 호출하는지
+    # 확인한다(review_with_llm을 실수로 부르면 여기서 걸린다).
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("analyze_page_findings가 review_with_llm(수정본 생성 포함)을 호출하면 안 된다")
+
+    monkeypatch.setattr("ai_friendly_doc.analyzer.review_with_llm", _fail_if_called)
+    monkeypatch.setattr(
+        "ai_friendly_doc.analyzer.review_findings_with_llm",
+        lambda page, rule_suggestions=None: list(rule_suggestions or []),
+    )
+
+    report = analyze_page_findings(make_page())
+    assert report.revised_document is None
+
+
+def test_analyze_page_findings_includes_llm_suggestions_when_configured(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setattr(
+        "ai_friendly_doc.analyzer.review_findings_with_llm",
+        lambda page, rule_suggestions=None: list(rule_suggestions or [])
+        + [
+            Suggestion(
+                rule_id="llm-review",
+                severity=Severity.INFO,
+                location="문서 전체",
+                message="테스트 메시지",
+                suggestion="테스트 제안",
+            )
+        ],
+    )
+    report = analyze_page_findings(make_page())
+    llm_suggestions = [s for s in report.suggestions if s.rule_id == "llm-review"]
+    assert len(llm_suggestions) == 1
+    assert report.revised_document is None
+
+
+def test_analyze_page_findings_adds_error_suggestion_when_llm_call_fails(monkeypatch):
+    from ai_friendly_doc.llm_review import LLMReviewError
+
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+
+    def _raise(page, rule_suggestions=None):
+        raise LLMReviewError("모델을 찾을 수 없습니다")
+
+    monkeypatch.setattr("ai_friendly_doc.analyzer.review_findings_with_llm", _raise)
+
+    report = analyze_page_findings(make_page("<h2>제목</h2><p>본문</p>"))
+    error_suggestions = [s for s in report.suggestions if s.rule_id == "llm-review-error"]
+    assert len(error_suggestions) == 1
+    rule_based = [s for s in report.suggestions if s.rule_id == "missing-h1"]
+    assert len(rule_based) == 1
+
+
+def test_generate_page_revision_delegates_to_llm_review(monkeypatch):
+    monkeypatch.setattr(
+        "ai_friendly_doc.analyzer.generate_revision",
+        lambda page, suggestions=None: ("# 최종 수정본", None),
+    )
+    revised, error = generate_page_revision(make_page(), [])
+    assert revised == "# 최종 수정본"
+    assert error is None
+
+
+def test_generate_page_revision_can_be_called_without_prior_findings(monkeypatch):
+    # AI 분석을 먼저 안 돌려도(suggestions가 None/빈 리스트여도) 동작해야
+    # 한다 - "최종 수정본 제안" 버튼을 처음부터 바로 눌러도 되게 하려는 목적.
+    captured = {}
+
+    def _fake_generate_revision(page, suggestions=None):
+        captured["suggestions"] = suggestions
+        return "# 수정본", None
+
+    monkeypatch.setattr("ai_friendly_doc.analyzer.generate_revision", _fake_generate_revision)
+    revised, error = generate_page_revision(make_page(), None)
+    assert revised == "# 수정본"
+    assert captured["suggestions"] is None

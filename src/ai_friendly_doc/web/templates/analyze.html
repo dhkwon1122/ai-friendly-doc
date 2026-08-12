@@ -25,18 +25,26 @@
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <form method="post" action="/analyze/fetch">
   <input type="hidden" name="mode" value="page_ids">
+  <textarea name="suggestions_json" hidden>{{ suggestions_json or '' }}</textarea>
   <label>Confluence 페이지 ID (한 줄에 하나씩, 또는 쉼표로 구분)</label>
   <textarea name="value" placeholder="예: 123456&#10;234567">{{ value or '' }}</textarea>
-  <button type="submit">문서 조회</button>
+  <div class="button-row">
+    <button type="submit" formaction="/analyze/fetch">문서 조회</button>
+    <button type="submit" formaction="/analyze">AI 분석</button>
+    <button type="submit" formaction="/analyze/revise">최종 수정본 제안</button>
+  </div>
+  <p class="hint">
+    문서 조회는 원본만 빠르게 가져옵니다. AI 분석(가이드라인 점검 +
+    수정안 찾기)과 최종 수정본 제안(문서 전체 재작성)은 각각 별도로
+    실행할 수 있고, 서로 독립적이라 한쪽이 실패해도 그 버튼만 다시 누르면
+    됩니다 - 특히 최종 수정본 제안은 출력이 길어 실패할 때가 있는데, 그럴
+    땐 AI 분석을 다시 돌릴 필요 없이 이 버튼만 다시 누르면 됩니다.
+  </p>
 </form>
 
 {% if fetched_pages %}
 <div class="doc-compare">
   <h2>조회된 문서</h2>
-  <p class="hint">
-    원본 내용을 먼저 확인하세요. AI 분석(가이드라인 점검 + 수정안 생성)은
-    문서 길이에 따라 시간이 걸릴 수 있습니다.
-  </p>
   {% for f in fetched_pages %}
   <details class="doc-compare-page" {% if loop.first %}open{% endif %}>
     <summary>
@@ -48,11 +56,6 @@
     </div>
   </details>
   {% endfor %}
-  <form method="post" action="/analyze">
-    <input type="hidden" name="mode" value="{{ mode }}">
-    <input type="hidden" name="value" value="{{ value }}">
-    <button type="submit">AI 분석 실행 ({{ fetched_pages|length }}개 페이지)</button>
-  </form>
 </div>
 {% endif %}
 

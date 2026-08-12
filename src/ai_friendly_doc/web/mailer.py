@@ -8,9 +8,10 @@ multipart로 "mail" 파트에 실어 보내도록 구현했다가 "CO400" 파라
 오류를 겪었다 - 실제로 성공한 참조 코드가 `data=json.dumps(payload)`로
 평문 JSON 바디를 보내는 것으로 확인되어 이 방식으로 교체했다.)
 
-userID 쿼리 파라미터도 requests의 params= kwarg로 넘기면 API가 못
-읽는다 - URL 문자열에 직접 `?userID=...`를 붙여서 보내야 한다 (실제
-테스트로 확인됨).
+userId 쿼리 파라미터도 requests의 params= kwarg로 넘기면 API가 못
+읽는다 - URL 문자열에 직접 `?userId=...`를 붙여서 보내야 한다 (실제
+테스트로 확인됨). 파라미터 이름은 대소문자까지 정확히 "userId"여야
+한다 - "userID"로 보내면 파라미터를 못 찾아 오류가 난다.
 
 MAIL_API_TOKEN이 설정된 경우에만 동작한다.
 """
@@ -67,8 +68,10 @@ def send_report_email(to_email: str, subject: str, body_html: str) -> None:
 
     base_url = (os.environ.get("MAIL_API_BASE_URL") or DEFAULT_MAIL_API_BASE_URL).rstrip("/")
     # requests의 params= kwarg로 넘기면 API가 쿼리스트링을 못 읽는다 - URL에
-    # 직접 ?userID=...를 붙여서 보내야 한다 (실제 테스트로 확인됨).
-    url = f"{base_url}/mails/send?userID={quote(user_id, safe='')}"
+    # 직접 ?userId=...를 붙여서 보내야 한다 (실제 테스트로 확인됨). 파라미터
+    # 이름은 "userID"가 아니라 "userId"여야 한다 - 대소문자가 다르면 API가
+    # 파라미터 자체를 못 찾아 오류를 낸다.
+    url = f"{base_url}/mails/send?userId={quote(user_id, safe='')}"
 
     # 사내 프록시(HTTP_PROXY/HTTPS_PROXY)가 이 사내 API 호출을 제대로
     # 못 넘겨서(예: 502 Bad Gateway) 502가 나는 경우가 있다. MAIL_API_NO_PROXY=true면

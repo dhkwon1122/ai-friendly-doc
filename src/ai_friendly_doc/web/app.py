@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -13,12 +14,13 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from ..analyzer import analyze_page
+from ..analyzer import PageReport, analyze_page, analyze_page_findings, generate_page_revision
 from ..config import ConfluenceConfig, parse_bool_env
 from ..confluence_client import ConfluenceClient
-from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES
+from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES, score_document
 from ..llm_review import storage_html_to_plain_text
 from ..report import render_report
+from ..rules import Severity, Suggestion
 from . import db
 from .mailer import MailConfigError, send_report_email
 from .security import SecurityConfigError, decrypt_token, encrypt_token, hash_password, verify_password
@@ -215,7 +217,70 @@ def _fetch_pages(user: db.User, mode: str, value: str):
 
 
 def _run_analysis(user: db.User, mode: str, value: str):
+    """조회 + AI 분석 + 최종 수정본까지 한 번에 (다운로드/이메일을 mode/value만
+    으로 직접 호출하는 경우의 하위 호환 경로에서만 쓴다 - 화면 흐름은 이제
+    findings와 revision을 독립된 버튼/요청으로 나눴다)."""
     return [analyze_page(page) for page in _fetch_pages(user, mode, value)]
+
+
+def _run_findings_analysis(user: db.User, mode: str, value: str):
+    """"AI 분석" 버튼 - 규칙 검사 + LLM 찾기/수정안만 수행하고 최종 수정본은
+    만들지 않는다 (가장 자주 실패하는 부분이라 별도 버튼으로 분리)."""
+    return [analyze_page_findings(page) for page in _fetch_pages(user, mode, value)]
+
+
+def _encode_suggestions_by_page(reports: list[PageReport]) -> str:
+    """PageReport 목록의 suggestions를 {page_id: [suggestion dict, ...]}
+    JSON으로 직렬화한다. "최종 수정본 제안" 버튼을 누를 때 AI 분석에서 이미
+    찾은 문제들을 이어서 참고할 수 있도록 화면에 hidden 필드로 실어 보낸다."""
+    data = {
+        r.page.id: [
+            {
+                "rule_id": s.rule_id,
+                "severity": s.severity.value,
+                "location": s.location,
+                "message": s.message,
+                "suggestion": s.suggestion,
+                "guideline_id": s.guideline_id,
+            }
+            for s in r.suggestions
+        ]
+        for r in reports
+    }
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _decode_suggestions_by_page(suggestions_json: str) -> dict[str, list[Suggestion]]:
+    if not suggestions_json:
+        return {}
+    try:
+        raw = json.loads(suggestions_json)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    result: dict[str, list[Suggestion]] = {}
+    for page_id, items in raw.items():
+        if not isinstance(items, list):
+            continue
+        suggestions = []
+        for item in items:
+            try:
+                suggestions.append(
+                    Suggestion(
+                        rule_id=str(item["rule_id"]),
+                        severity=Severity(item["severity"]),
+                        location=str(item["location"]),
+                        message=str(item["message"]),
+                        suggestion=str(item["suggestion"]),
+                        guideline_id=item.get("guideline_id"),
+                    )
+                )
+            except (KeyError, ValueError, TypeError):
+                continue
+        result[page_id] = suggestions
+    return result
 
 
 @app.get("/analyze", response_class=HTMLResponse)
@@ -272,6 +337,11 @@ def analyze_fetch(request: Request, mode: str = Form(...), value: str = Form(...
 
 @app.post("/analyze", response_class=HTMLResponse)
 def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(...)):
+    """"AI 분석" 버튼 - 규칙 검사 + LLM 찾기/수정안까지만 수행한다 (최종
+    수정본 생성은 /analyze/revise가 별도로 담당). 가장 자주 실패하는
+    수정본 생성 호출을 여기서 하지 않으므로, 이 단계는 상대적으로 빠르고
+    안정적이다.
+    """
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
@@ -279,7 +349,7 @@ def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(..
     guideline_context = {"core_guidelines": CORE_GUIDELINES, "extra_guidelines": EXTRA_GUIDELINES}
 
     try:
-        reports = _run_analysis(user, mode, value)
+        reports = _run_findings_analysis(user, mode, value)
     except SecurityConfigError as e:
         return render(request, "analyze.html", error=str(e), mode=mode, value=value, **guideline_context)
     except Exception as e:  # noqa: BLE001 - 사용자에게 원인 표시
@@ -310,6 +380,97 @@ def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(..
         report_html=report_html,
         report_markdown=report_markdown,
         reports=reports,
+        # "최종 수정본 제안" 버튼을 누르면 이 문제 목록을 이어서 참고할 수
+        # 있도록 hidden 필드로 실어 보낸다.
+        suggestions_json=_encode_suggestions_by_page(reports),
+        **guideline_context,
+    )
+
+
+@app.post("/analyze/revise", response_class=HTMLResponse)
+def analyze_revise(
+    request: Request,
+    mode: str = Form(...),
+    value: str = Form(...),
+    suggestions_json: str = Form(""),
+):
+    """"최종 수정본 제안" 버튼 - 문서 전체 재작성 LLM 호출만 (재)수행한다.
+
+    LLM 호출 중 출력이 가장 길고 가장 자주 실패하는 부분이라, "AI 분석"
+    (규칙 검사 + 찾기/수정안)과 완전히 분리했다 - 실패해도 AI 분석을 다시
+    돌릴 필요 없이 이 버튼만 다시 누르면 된다. suggestions_json이 있으면
+    (AI 분석을 먼저 돌린 경우) 그 결과를 참고해 더 구체적인 수정본을
+    만들고, 없으면(바로 이 버튼부터 누른 경우) 참고 없이 만든다.
+    """
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    guideline_context = {"core_guidelines": CORE_GUIDELINES, "extra_guidelines": EXTRA_GUIDELINES}
+
+    try:
+        pages = _fetch_pages(user, mode, value)
+    except SecurityConfigError as e:
+        return render(request, "analyze.html", error=str(e), mode=mode, value=value, **guideline_context)
+    except Exception as e:  # noqa: BLE001 - 사용자에게 원인 표시
+        return render(
+            request, "analyze.html", error=f"Confluence 조회 중 오류: {e}", mode=mode, value=value, **guideline_context
+        )
+
+    if not pages:
+        return render(
+            request,
+            "analyze.html",
+            error="조회된 페이지가 없습니다.",
+            mode=mode,
+            value=value,
+            **guideline_context,
+        )
+
+    suggestions_by_page = _decode_suggestions_by_page(suggestions_json)
+
+    reports = []
+    for page in pages:
+        # AI 분석을 이미 돌린 페이지면 그 결과를 참고하고, 아니면 빈
+        # 목록으로(그래도 동작한다 - 시스템 프롬프트의 가이드라인만으로 다시
+        # 쓴다) 수정본을 생성한다.
+        prior_suggestions = suggestions_by_page.get(page.id, [])
+        revised_document, revision_error = generate_page_revision(page, prior_suggestions)
+        suggestions = list(prior_suggestions)
+        if revision_error:
+            suggestions.append(
+                Suggestion(
+                    rule_id="llm-revision-error",
+                    severity=Severity.INFO,
+                    location="문서 전체",
+                    message="문서 전체 수정본을 만들지 못했습니다.",
+                    suggestion=revision_error,
+                )
+            )
+        reports.append(
+            PageReport(
+                page=page,
+                suggestions=suggestions,
+                # AI 분석을 이미 거친 페이지만 "LLM으로 확인됨"으로 채점한다 -
+                # 안 거쳤으면 findings 자체가 검증되지 않았으므로 가이드라인
+                # 점수는 "확인 불가"로 남아야 한다.
+                guideline_score=score_document(suggestions, llm_configured=page.id in suggestions_by_page),
+                original_document=storage_html_to_plain_text(page.storage_html, max_chars=None),
+                revised_document=revised_document,
+            )
+        )
+
+    report_markdown = render_report(reports)
+    report_html = md.markdown(report_markdown, extensions=["tables", "fenced_code"])
+    return render(
+        request,
+        "analyze.html",
+        mode=mode,
+        value=value,
+        report_html=report_html,
+        report_markdown=report_markdown,
+        reports=reports,
+        suggestions_json=_encode_suggestions_by_page(reports),
         **guideline_context,
     )
 
