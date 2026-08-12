@@ -16,14 +16,17 @@ def test_plain_paragraph_wraps_in_p_tag():
     assert markdown_to_confluence_storage("그냥 문단입니다.") == "<p>그냥 문단입니다.</p>"
 
 
-def test_multiline_paragraph_without_blank_line_merges_into_one_p():
+def test_multiline_paragraph_without_blank_line_keeps_line_breaks():
+    # 빈 줄로 안 나뉜 같은 문단 안의 줄바꿈도 공백으로 뭉개지 않고 <br/>로
+    # 보존해야 한다 - HTML은 순수 개행을 공백으로 접어버리므로, <br/> 없이는
+    # 붙여넣었을 때 줄바꿈이 사라진다.
     result = markdown_to_confluence_storage("첫 번째 줄\n두 번째 줄")
-    assert result == "<p>첫 번째 줄 두 번째 줄</p>"
+    assert result == "<p>첫 번째 줄<br/>두 번째 줄</p>"
 
 
 def test_blank_line_separates_paragraphs():
     result = markdown_to_confluence_storage("문단 하나\n\n문단 둘")
-    assert result == "<p>문단 하나</p>\n<p>문단 둘</p>"
+    assert result == "<p>문단 하나</p><p>문단 둘</p>"
 
 
 def test_unordered_list_converts_to_ul():
