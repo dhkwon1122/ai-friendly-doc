@@ -69,6 +69,25 @@ def test_ordered_list_ends_when_followed_by_unrelated_paragraph():
     assert result == "<ol><li>항목 하나</li><li>항목 둘</li></ol><p>그냥 문단입니다.</p>"
 
 
+def test_ordered_list_resumes_numbering_with_start_attr_when_table_intervenes():
+    # 표/문단처럼 목록 항목이 아닌 다른 블록이 번호 항목 사이에 끼는 경우는
+    # 미리 전부 예측해서 하나의 <ol>로 병합할 수 없다(끼어들 수 있는 블록
+    # 종류가 너무 다양함). 그래서 별도의 <ol>로 갈라지더라도, 소스에 적힌
+    # 실제 번호("2. ")를 읽어 <ol start="2">로 이어붙여서 Confluence가
+    # 항상 1번부터 다시 매기는 문제 자체를 막아야 한다.
+    md = "1. 첫 번째 단계\n\n| 항목 | 값 |\n| --- | --- |\n| a | 1 |\n\n2. 두 번째 단계\n3. 세 번째 단계"
+    result = markdown_to_confluence_storage(md)
+    assert "<ol><li>첫 번째 단계</li></ol>" in result
+    assert '<ol start="2"><li>두 번째 단계</li><li>세 번째 단계</li></ol>' in result
+
+
+def test_ordered_list_resumes_numbering_with_start_attr_when_paragraph_intervenes():
+    md = "1. 첫 번째 단계\n\n설명 문단입니다.\n\n2. 두 번째 단계"
+    result = markdown_to_confluence_storage(md)
+    assert "<ol><li>첫 번째 단계</li></ol>" in result
+    assert '<ol start="2"><li>두 번째 단계</li></ol>' in result
+
+
 def test_table_first_row_becomes_header():
     md = "| 이름 | 나이 |\n| --- | --- |\n| 홍길동 | 30 |"
     result = markdown_to_confluence_storage(md)

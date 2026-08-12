@@ -22,7 +22,7 @@ import re
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _LIST_ITEM_RE = re.compile(r"^[-*]\s+(.*)$")
-_ORDERED_ITEM_RE = re.compile(r"^\d+\.\s+(.*)$")
+_ORDERED_ITEM_RE = re.compile(r"^(\d+)\.\s+(.*)$")
 _TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
 _TABLE_SEPARATOR_RE = re.compile(r"^\|?[\s:|-]+\|?$")
 
@@ -45,7 +45,23 @@ def _inline_to_storage(text: str) -> str:
     return escaped
 
 
-def _parse_list(lines: list[str], start: int, n: int, tag: str, item_re: re.Pattern) -> tuple[str, int]:
+def _match_item(line: str, tag: str) -> tuple[int | None, str] | None:
+    """line이 tag("ul"/"ol") 종류의 목록 항목이면 (번호, 항목 텍스트)를
+    반환한다. ul은 번호가 없으므로 번호 자리에 None이 온다. 매칭 안 되면
+    None.
+    """
+    if tag == "ul":
+        m = _LIST_ITEM_RE.match(line)
+        if not m:
+            return None
+        return None, m.group(1).strip()
+    m = _ORDERED_ITEM_RE.match(line)
+    if not m:
+        return None
+    return int(m.group(1)), m.group(2).strip()
+
+
+def _parse_list(lines: list[str], start: int, n: int, tag: str) -> tuple[str, int]:
     """항목 사이에 들여쓰기된 하위 목록이나 빈 줄이 끼어 있어도 하나의
     <ol>/<ul>로 계속 묶는다.
 
@@ -54,21 +70,33 @@ def _parse_list(lines: list[str], start: int, n: int, tag: str, item_re: re.Patt
     원본에 있던 순서가 뒤죽박죽으로 보인다. LLM이 만드는 수정본은 종종
     번호 항목 아래에 들여쓴 "- " 하위 설명을 붙이는데(하위 목록), 그런
     하위 목록은 바로 위 항목의 <li> 안에 중첩된 목록으로 넣고, 상위 번호
-    목록 자체는 계속 이어가야 한다.
+    목록 자체는 계속 이어간다.
+
+    다만 표/문단처럼 목록 항목이 아닌 다른 블록이 번호 항목 사이에 끼는
+    경우까지 전부 여기서 미리 예측해 병합할 수는 없다(끼어들 수 있는
+    블록 종류가 너무 다양하다). 그래서 여기서 병합하지 못해 결국 별도의
+    <ol>로 갈라지더라도, 그 <ol>이 실제로 몇 번부터 시작하는 항목인지는
+    소스에 적힌 숫자(예: "2. ")에서 그대로 읽어 <ol start="N">으로
+    표시한다 - 병합 여부와 무관하게, Confluence가 항상 1번부터 다시
+    매기는 문제 자체를 원천적으로 막는다.
     """
     items: list[str] = []
     i = start
+    first_number: int | None = None
     while i < n:
         current = lines[i].rstrip()
-        m = item_re.match(current)
-        if not m:
+        matched = _match_item(current, tag)
+        if matched is None:
             break
-        item_html = _inline_to_storage(m.group(1).strip())
+        number, text = matched
+        if first_number is None:
+            first_number = number
+        item_html = _inline_to_storage(text)
         i += 1
 
         # 항목 바로 아래에 들여쓰기된 하위 목록이 있으면(원래 정규식은
-        # 들여쓰기가 없는 줄만 매칭하므로 들여쓰인 줄은 위 item_re에 안
-        # 걸린다) 현재 항목 안에 중첩된 목록으로 넣는다.
+        # 들여쓰기가 없는 줄만 매칭하므로 들여쓰인 줄은 위에서 안 걸린다)
+        # 현재 항목 안에 중첩된 목록으로 넣는다.
         nested_items: list[str] = []
         nested_tag: str | None = None
         while i < n:
@@ -78,17 +106,17 @@ def _parse_list(lines: list[str], start: int, n: int, tag: str, item_re: re.Patt
             stripped = nested_raw.lstrip()
             if len(stripped) == len(nested_raw):
                 break  # 들여쓰기가 없다 - 다음 형제 항목이거나 다른 블록
-            nested_list_match = _LIST_ITEM_RE.match(stripped)
-            nested_ordered_match = _ORDERED_ITEM_RE.match(stripped)
-            if not (nested_list_match or nested_ordered_match):
+            nested_ul = _match_item(stripped, "ul")
+            nested_ol = _match_item(stripped, "ol")
+            if nested_ul is None and nested_ol is None:
                 break
-            current_nested_tag = "ul" if nested_list_match else "ol"
+            current_nested_tag = "ul" if nested_ul is not None else "ol"
             if nested_tag is None:
                 nested_tag = current_nested_tag
             elif nested_tag != current_nested_tag:
                 break  # 하위 목록 종류가 섞이면 더 복잡해지므로 여기서 중첩을 멈춘다
-            nested_m = nested_list_match or nested_ordered_match
-            nested_items.append(f"<li>{_inline_to_storage(nested_m.group(1).strip())}</li>")
+            _, nested_text = nested_ul if nested_ul is not None else nested_ol
+            nested_items.append(f"<li>{_inline_to_storage(nested_text)}</li>")
             i += 1
 
         if nested_items:
@@ -99,12 +127,13 @@ def _parse_list(lines: list[str], start: int, n: int, tag: str, item_re: re.Patt
         # 같은 종류의 항목이면 계속 같은 목록으로 묶는다. 다른 내용이면 빈
         # 줄을 그대로 문단 구분으로 남겨야 하므로 여기서 건드리지 않는다.
         if i < n and not lines[i].strip():
-            if i + 1 < n and item_re.match(lines[i + 1].rstrip()):
+            if i + 1 < n and _match_item(lines[i + 1].rstrip(), tag) is not None:
                 i += 1
             else:
                 break
 
-    return f"<{tag}>{''.join(items)}</{tag}>", i
+    start_attr = f' start="{first_number}"' if tag == "ol" and first_number not in (None, 1) else ""
+    return f"<{tag}{start_attr}>{''.join(items)}</{tag}>", i
 
 
 def _render_table(table_lines: list[str]) -> str:
@@ -164,8 +193,7 @@ def markdown_to_confluence_storage(text: str) -> str:
         ordered_match = _ORDERED_ITEM_RE.match(line)
         if list_match or ordered_match:
             tag = "ul" if list_match else "ol"
-            item_re = _LIST_ITEM_RE if tag == "ul" else _ORDERED_ITEM_RE
-            list_html, i = _parse_list(lines, i, n, tag, item_re)
+            list_html, i = _parse_list(lines, i, n, tag)
             parts.append(list_html)
             continue
 
