@@ -8,7 +8,7 @@ from .confluence_client import ConfluencePage
 from .guidelines import ScoreReport, score_document
 from .llm_review import (
     LLMReviewError,
-    generate_revision,
+    generate_verified_revision,
     is_llm_configured,
     review_findings_with_llm,
     review_with_llm,
@@ -129,9 +129,19 @@ def analyze_page_findings(page: ConfluencePage, rules: list[Rule] | None = None)
     )
 
 
-def generate_page_revision(page: ConfluencePage, suggestions: list[Suggestion] | None = None) -> tuple[str | None, str | None]:
+def generate_page_revision(
+    page: ConfluencePage, suggestions: list[Suggestion] | None = None
+) -> tuple[str | None, list[Suggestion], str | None]:
     """최종 수정본만 별도로 (재)생성한다. 웹 UI의 "최종 수정본 제안" 버튼이
     쓴다 - AI 분석(analyze_page_findings)과 독립적으로 호출/재시도할 수
-    있다. (revised_document, 실패 사유) 튜플을 반환한다.
+    있다.
+
+    만들기만 하고 끝내지 않고, 만든 수정본이 실제로 가이드라인을 지키는지
+    검증해서 부족하면 다시 고치기를 몇 차례 반복한다(generate_verified_revision
+    참고) - 검증 없이 내놓은 수정본은 실제로는 가이드라인을 잘 안 지킬 수
+    있어서 신뢰하기 어렵다.
+
+    (revised_document, 끝까지 해결 못한 문제 목록, 실패 사유) 튜플을
+    반환한다.
     """
-    return generate_revision(page, suggestions)
+    return generate_verified_revision(page, suggestions)

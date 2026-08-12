@@ -2,6 +2,7 @@ import pytest
 
 from ai_friendly_doc.confluence_client import Attachment, ConfluencePage
 from ai_friendly_doc.llm_review import (
+    REVISION_SYSTEM_PROMPT,
     LLMReviewError,
     LLMReviewResult,
     _apply_rule_fixes,
@@ -10,10 +11,12 @@ from ai_friendly_doc.llm_review import (
     _parse_llm_response,
     _to_suggestions,
     generate_revision,
+    generate_verified_revision,
     is_llm_configured,
     review_findings_with_llm,
     review_with_llm,
     storage_html_to_plain_text,
+    verify_revision_guideline_compliance,
 )
 from ai_friendly_doc.rules import Severity, Suggestion
 
@@ -256,6 +259,35 @@ def test_build_user_content_omits_findings_section_when_empty():
     assert "구조 검사로 발견된" not in content
 
 
+# ---- REVISION_SYSTEM_PROMPT -------------------------------------------------
+
+
+def test_revision_system_prompt_includes_full_guideline_checklist():
+    # 예전에는 최종 수정본 생성 프롬프트가 "이미 발견된 문제"만 알고
+    # 가이드라인 목록 자체는 몰랐다 - 그래서 규칙/찾기 단계가 못 잡은
+    # 가이드라인(예: 표 캡션, 문서 요약)은 수정본에 절대 반영되지 않았다.
+    # 이제는 찾기 프롬프트(SYSTEM_PROMPT)와 마찬가지로 전체 가이드라인
+    # 목록을 알려준다.
+    assert "core-2: 이미지/표 설명 표기" in REVISION_SYSTEM_PROMPT
+    assert "core-7: 문서의 자체 완결성" in REVISION_SYSTEM_PROMPT
+    assert "extra-1: 서론/본론/결론 흐름으로 작성" in REVISION_SYSTEM_PROMPT
+
+
+def test_revision_system_prompt_excludes_llm_invisible_guidelines():
+    # extra-2/3/7은 LLM에게 넘기는 평문에서 이미 빠진 정보(원본 HTML의
+    # colspan/스타일 태그 등)로만 판별 가능해서, 찾기 프롬프트와 마찬가지로
+    # 수정본 프롬프트에서도 LLM에게 새로 찾아달라고 요청하지 않는다.
+    assert "extra-2:" not in REVISION_SYSTEM_PROMPT
+    assert "extra-3:" not in REVISION_SYSTEM_PROMPT
+    assert "extra-7:" not in REVISION_SYSTEM_PROMPT
+
+
+def test_revision_system_prompt_allows_improvements_beyond_found_list():
+    assert "목록에 없더라도" in REVISION_SYSTEM_PROMPT
+    assert "캡션" in REVISION_SYSTEM_PROMPT
+    assert "요약" in REVISION_SYSTEM_PROMPT
+
+
 # ---- _build_revision_user_content -------------------------------------------
 
 
@@ -478,6 +510,147 @@ def test_generate_revision_can_retry_after_failure_without_findings_call(monkeyp
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: succeeding_client)
     revised, error = generate_revision(make_page("<p>본문</p>"), [])
     assert revised == "# 재시도 성공"
+    assert error is None
+
+
+# ---- verify_revision_guideline_compliance / generate_verified_revision ------
+
+
+class _PromptAwareFakeCompletions:
+    """system 프롬프트 종류(찾기용 SYSTEM_PROMPT vs 수정본 생성용
+    REVISION_SYSTEM_PROMPT)에 따라 서로 다른 응답 큐에서 하나씩 꺼내준다 -
+    generate_verified_revision은 두 종류의 호출을 번갈아 하기 때문에,
+    호출 순서가 아니라 "어떤 프롬프트로 부른 호출인지"로 구분해야 검증/
+    보정 루프를 명확하게 시뮬레이션할 수 있다."""
+
+    def __init__(self, revision_responses=None, findings_responses=None):
+        self._revision_responses = list(revision_responses or [])
+        self._findings_responses = list(findings_responses or [])
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        system_content = kwargs["messages"][0]["content"]
+        queue = self._revision_responses if system_content == REVISION_SYSTEM_PROMPT else self._findings_responses
+        item = queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        content, finish_reason = item
+        return _FakeResponse(content, finish_reason=finish_reason)
+
+
+class _PromptAwareFakeClient:
+    def __init__(self, revision_responses=None, findings_responses=None):
+        self.chat = _FakeChat(_PromptAwareFakeCompletions(revision_responses, findings_responses))
+
+
+_NO_ISSUES = '{"new_findings": [], "rule_fixes": []}'
+
+
+def _findings_json(message: str) -> str:
+    return f'{{"new_findings": [{{"severity": "warning", "message": "{message}", "suggestion": "고치세요", "guideline": "core-2"}}], "rule_fixes": []}}'
+
+
+def test_verify_revision_guideline_compliance_returns_empty_when_not_configured(monkeypatch):
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    result = verify_revision_guideline_compliance(make_page(), "# 수정본")
+    assert result == []
+
+
+def test_verify_revision_guideline_compliance_returns_new_findings(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    fake_client = _FakeClient(content=_findings_json("표에 캡션이 없습니다"))
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    result = verify_revision_guideline_compliance(make_page(), "# 수정본\n\n| a | b |\n|---|---|")
+
+    assert len(result) == 1
+    assert result[0].message == "표에 캡션이 없습니다"
+    assert result[0].guideline_id == "core-2"
+
+
+def test_generate_verified_revision_passes_immediately_when_no_issues_found(monkeypatch):
+    fake_client = _PromptAwareFakeClient(
+        revision_responses=[("# 수정본", "stop")],
+        findings_responses=[(_NO_ISSUES, "stop")],
+    )
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+
+    assert revised == "# 수정본"
+    assert unresolved == []
+    assert error is None
+    assert len(fake_client.chat.completions.calls) == 2  # 생성 1회 + 검증 1회
+
+
+def test_generate_verified_revision_refines_once_then_passes(monkeypatch):
+    fake_client = _PromptAwareFakeClient(
+        revision_responses=[("# 수정본 v1", "stop"), ("# 수정본 v2 (표 캡션 추가됨)", "stop")],
+        findings_responses=[(_findings_json("표에 캡션이 없습니다"), "stop"), (_NO_ISSUES, "stop")],
+    )
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+
+    assert revised == "# 수정본 v2 (표 캡션 추가됨)"
+    assert unresolved == []
+    assert error is None
+    assert len(fake_client.chat.completions.calls) == 4  # 생성1 + 검증1 + 보정1 + 검증2
+
+
+def test_generate_verified_revision_returns_remaining_issues_after_max_rounds(monkeypatch):
+    # 검증이 매번 새 문제를 찾아내면(모델이 끝내 못 고치는 경우)
+    # REVISION_REFINE_MAX_ROUNDS번만 반복하고 멈춰야 한다 - 무한 루프
+    # 방지. 마지막에 남은 문제는 숨기지 않고 그대로 반환한다.
+    fake_client = _PromptAwareFakeClient(
+        revision_responses=[("# v1", "stop"), ("# v2", "stop")],
+        findings_responses=[
+            (_findings_json("문제 A"), "stop"),
+            (_findings_json("문제 B"), "stop"),
+        ],
+    )
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+
+    assert revised == "# v2"
+    assert len(unresolved) == 1
+    assert unresolved[0].message == "문제 B"
+    assert error is None
+
+
+def test_generate_verified_revision_returns_none_when_initial_generation_fails(monkeypatch):
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+    assert revised is None
+    assert unresolved == []
+    assert error is not None
+
+
+def test_generate_verified_revision_keeps_revision_when_verify_call_fails(monkeypatch):
+    # 검증 호출 자체가 실패해도(예: 일시적 네트워크 오류) 이미 성공적으로
+    # 만든 수정본을 버리면 안 된다 - 검증 실패가 수정본 생성 성공을
+    # 무효로 만들지 않는다.
+    fake_client = _PromptAwareFakeClient(
+        revision_responses=[("# 만들어진 수정본", "stop")],
+        findings_responses=[ConnectionError("일시적 오류"), ConnectionError("일시적 오류")],
+    )
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+
+    assert revised == "# 만들어진 수정본"
+    assert unresolved == []
     assert error is None
 
 

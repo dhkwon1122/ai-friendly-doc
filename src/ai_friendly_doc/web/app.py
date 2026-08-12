@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import html as html_module
 import json
 import os
@@ -546,7 +547,7 @@ def analyze_revise(
         # 목록으로(그래도 동작한다 - 시스템 프롬프트의 가이드라인만으로 다시
         # 쓴다) 수정본을 생성한다.
         prior_suggestions = suggestions_by_page.get(page.id, [])
-        revised_document, revision_error = generate_page_revision(page, prior_suggestions)
+        revised_document, unresolved, revision_error = generate_page_revision(page, prior_suggestions)
         suggestions = list(prior_suggestions)
         if revision_error:
             suggestions.append(
@@ -557,6 +558,19 @@ def analyze_revise(
                     message="문서 전체 수정본을 만들지 못했습니다.",
                     suggestion=revision_error,
                 )
+            )
+        elif unresolved:
+            # 수정본을 만든 뒤 다시 검증해봤는데도 남아있는 문제 - LLM이
+            # 끝까지 스스로 못 고친 부분이므로 숨기지 않고 그대로 드러낸다
+            # (예: 실제 내용 확인이 필요한 이미지 등, LLM이 문서 안 정보만
+            # 으로는 완결할 수 없는 항목일 가능성이 있다).
+            suggestions.extend(
+                dataclasses.replace(
+                    s,
+                    rule_id="revision-unresolved",
+                    message=f"[수정본에도 남음] {s.message}",
+                )
+                for s in unresolved
             )
         reports.append(
             PageReport(
