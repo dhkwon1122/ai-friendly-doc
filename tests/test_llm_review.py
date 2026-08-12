@@ -402,6 +402,22 @@ def test_generate_revision_succeeds_independently_of_findings(monkeypatch):
     assert len(fake_client.chat.completions.calls) == 1
 
 
+def test_generate_revision_truncation_error_advises_increasing_not_decreasing(monkeypatch):
+    # 응답이 max_tokens에 걸려 잘린 경우(finish_reason="length")의 해결책은
+    # LLM_MAX_OUTPUT_TOKENS를 "늘리는" 것이다 - 반대로 줄이라고 안내하면
+    # 사용자가 계속 잘리는 값으로 다시 시도하게 된다(실제로 겪은 문제).
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
+    fake_client = _FakeClient(content="잘린 응답", finish_reason="length")
+    monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
+
+    revised, error = generate_revision(make_page("<p>본문</p>"), [])
+
+    assert revised is None
+    assert "늘려" in error
+    assert "작게" not in error  # 예전 문구("작게 조정")가 다시 섞여 들어가지 않았는지 확인
+
+
 def test_generate_revision_can_retry_after_failure_without_findings_call(monkeypatch):
     # "실패해도 그것만 다시 시도" 요구사항: 실패한 뒤 다시 호출해도
     # findings 호출 없이 generate_revision만 다시 도는지 확인한다.
