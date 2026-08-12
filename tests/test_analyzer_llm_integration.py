@@ -138,11 +138,12 @@ def test_analyze_page_findings_adds_error_suggestion_when_llm_call_fails(monkeyp
 def test_generate_page_revision_delegates_to_llm_review(monkeypatch):
     monkeypatch.setattr(
         "ai_friendly_doc.analyzer.generate_verified_revision",
-        lambda page, suggestions=None: ("# 최종 수정본", [], None),
+        lambda page, suggestions=None: ("# 최종 수정본", [], True, None),
     )
-    revised, unresolved, error = generate_page_revision(make_page(), [])
+    revised, unresolved, verified, error = generate_page_revision(make_page(), [])
     assert revised == "# 최종 수정본"
     assert unresolved == []
+    assert verified is True
     assert error is None
 
 
@@ -153,10 +154,10 @@ def test_generate_page_revision_can_be_called_without_prior_findings(monkeypatch
 
     def _fake_generate_verified_revision(page, suggestions=None):
         captured["suggestions"] = suggestions
-        return "# 수정본", [], None
+        return "# 수정본", [], True, None
 
     monkeypatch.setattr("ai_friendly_doc.analyzer.generate_verified_revision", _fake_generate_verified_revision)
-    revised, unresolved, error = generate_page_revision(make_page(), None)
+    revised, unresolved, verified, error = generate_page_revision(make_page(), None)
     assert revised == "# 수정본"
     assert unresolved == []
     assert captured["suggestions"] is None

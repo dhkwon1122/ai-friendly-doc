@@ -587,10 +587,11 @@ def test_generate_verified_revision_passes_immediately_when_no_issues_found(monk
     monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
 
-    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+    revised, unresolved, verified, error = generate_verified_revision(make_page("<p>본문</p>"), [])
 
     assert revised == "# 수정본"
     assert unresolved == []
+    assert verified is True
     assert error is None
     assert len(fake_client.chat.completions.calls) == 2  # 생성 1회 + 검증 1회
 
@@ -604,10 +605,11 @@ def test_generate_verified_revision_refines_once_then_passes(monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
 
-    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+    revised, unresolved, verified, error = generate_verified_revision(make_page("<p>본문</p>"), [])
 
     assert revised == "# 수정본 v2 (표 캡션 추가됨)"
     assert unresolved == []
+    assert verified is True
     assert error is None
     assert len(fake_client.chat.completions.calls) == 4  # 생성1 + 검증1 + 보정1 + 검증2
 
@@ -627,26 +629,31 @@ def test_generate_verified_revision_returns_remaining_issues_after_max_rounds(mo
     monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
 
-    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+    revised, unresolved, verified, error = generate_verified_revision(make_page("<p>본문</p>"), [])
 
     assert revised == "# v2"
     assert len(unresolved) == 1
     assert unresolved[0].message == "문제 B"
+    assert verified is True  # 마지막 라운드까지 검증 호출 자체는 성공했다 (남은 문제가 있을 뿐)
     assert error is None
 
 
 def test_generate_verified_revision_returns_none_when_initial_generation_fails(monkeypatch):
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
-    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+    revised, unresolved, verified, error = generate_verified_revision(make_page("<p>본문</p>"), [])
     assert revised is None
     assert unresolved == []
+    assert verified is False
     assert error is not None
 
 
 def test_generate_verified_revision_keeps_revision_when_verify_call_fails(monkeypatch):
     # 검증 호출 자체가 실패해도(예: 일시적 네트워크 오류) 이미 성공적으로
     # 만든 수정본을 버리면 안 된다 - 검증 실패가 수정본 생성 성공을
-    # 무효로 만들지 않는다.
+    # 무효로 만들지 않는다. 다만 검증이 한 번도 성공하지 못했으므로
+    # verified는 False여야 한다 - "문제 없음"과 "확인을 못 했음"은
+    # 구분해야 한다(전자를 True로 잘못 반환하면 실제로는 확인 안 된
+    # 수정본이 "가이드라인 다 지킴"으로 잘못 표시된다).
     fake_client = _PromptAwareFakeClient(
         revision_responses=[("# 만들어진 수정본", "stop")],
         findings_responses=[ConnectionError("일시적 오류"), ConnectionError("일시적 오류")],
@@ -655,10 +662,11 @@ def test_generate_verified_revision_keeps_revision_when_verify_call_fails(monkey
     monkeypatch.setenv("LLM_MODEL", "qwen2.5-32b-instruct")
     monkeypatch.setattr("ai_friendly_doc.llm_review._client", lambda: fake_client)
 
-    revised, unresolved, error = generate_verified_revision(make_page("<p>본문</p>"), [])
+    revised, unresolved, verified, error = generate_verified_revision(make_page("<p>본문</p>"), [])
 
     assert revised == "# 만들어진 수정본"
     assert unresolved == []
+    assert verified is False
     assert error is None
 
 
