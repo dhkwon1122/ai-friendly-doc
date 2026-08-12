@@ -22,10 +22,53 @@ Confluence 내장 "Markdown" 매크로(ac:structured-macro ac:name="markdown")
 
 from __future__ import annotations
 
+import re
+
 _MACRO_OPEN = '<ac:structured-macro ac:name="markdown" ac:schema-version="1">'
 _BODY_OPEN = "<ac:plain-text-body><![CDATA["
 _BODY_CLOSE = "]]></ac:plain-text-body>"
 _MACRO_CLOSE = "</ac:structured-macro>"
+
+_HEADING_RE = re.compile(r"^#{1,6}\s+.*$")
+_LIST_ITEM_RE = re.compile(r"^[-*]\s+.*$")
+_ORDERED_ITEM_RE = re.compile(r"^\d+\.\s+.*$")
+_TABLE_ROW_RE = re.compile(r"^\|.+\|\s*$")
+
+
+def _is_plain_paragraph_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    return not (
+        _HEADING_RE.match(stripped)
+        or _LIST_ITEM_RE.match(stripped)
+        or _ORDERED_ITEM_RE.match(stripped)
+        or _TABLE_ROW_RE.match(stripped)
+    )
+
+
+def _insert_hard_line_breaks(text: str) -> str:
+    """빈 줄로 안 나뉜 같은 문단 안의 줄바꿈을 마크다운 하드 브레이크로
+    바꾼다.
+
+    표준 마크다운(Confluence의 Markdown 매크로 포함)은 문단 안의 순수
+    개행 하나를 줄바꿈이 아니라 그냥 공백으로 접어버린다(소프트 브레이크).
+    그래서 원본 문서에 있던 줄바꿈이 우리가 손대지 않은 평문을 그대로
+    넘기면 사라진다. 마크다운에서 줄바꿈을 강제하는 표준 방법은 줄 끝에
+    역슬래시를 붙이는 것이다(공백 두 개짜리 방법은 우리 쪽 처리 과정에서
+    trailing whitespace가 잘려나가기 쉬워 덜 안전하다).
+
+    제목/목록/표처럼 이미 자기 줄에서 독립된 블록으로 인식되는 줄은 건드리지
+    않는다 - 그 경계는 마크다운 문법 자체가 이미 처리하므로 하드 브레이크가
+    필요 없다. 오직 "평범한 문단 줄 바로 다음에 또 평범한 문단 줄이 오는"
+    경우에만 사이에 하드 브레이크를 넣는다.
+    """
+    lines = text.splitlines()
+    n = len(lines)
+    for i in range(n - 1):
+        if _is_plain_paragraph_line(lines[i]) and _is_plain_paragraph_line(lines[i + 1]):
+            lines[i] = lines[i].rstrip() + "\\"
+    return "\n".join(lines)
 
 
 def _escape_cdata(text: str) -> str:
@@ -43,7 +86,8 @@ def markdown_to_confluence_markdown_macro(text: str) -> str:
     """
     if not text or not text.strip():
         return ""
-    return f"{_MACRO_OPEN}{_BODY_OPEN}{_escape_cdata(text)}{_BODY_CLOSE}{_MACRO_CLOSE}"
+    with_breaks = _insert_hard_line_breaks(text)
+    return f"{_MACRO_OPEN}{_BODY_OPEN}{_escape_cdata(with_breaks)}{_BODY_CLOSE}{_MACRO_CLOSE}"
 
 
 def escape_markdown_link_text(text: str) -> str:

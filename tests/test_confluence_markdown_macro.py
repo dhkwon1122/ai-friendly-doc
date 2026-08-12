@@ -61,3 +61,43 @@ def test_escape_markdown_link_text_escapes_brackets_and_backslash():
     assert escape_markdown_link_text("일반 제목") == "일반 제목"
     assert escape_markdown_link_text("대괄호 [있는] 제목") == "대괄호 \\[있는\\] 제목"
     assert escape_markdown_link_text("백슬래시\\문자") == "백슬래시\\\\문자"
+
+
+# ---- 문단 안 줄바꿈(하드 브레이크) ----------------------------------------
+
+
+def test_inserts_hard_break_between_consecutive_plain_paragraph_lines():
+    # 표준 마크다운은 문단 안의 순수 개행 하나를 공백으로 접어버린다
+    # (소프트 브레이크) - 그래서 빈 줄로 안 나뉜 같은 문단 안의 줄은 줄
+    # 끝에 "\"를 붙여 마크다운 하드 브레이크로 만들어야 실제 줄바꿈이
+    # 살아남는다.
+    result = markdown_to_confluence_markdown_macro("첫 번째 줄\n두 번째 줄")
+    assert "첫 번째 줄\\\n두 번째 줄" in result
+
+
+def test_does_not_add_hard_break_across_blank_line():
+    result = markdown_to_confluence_markdown_macro("문단 하나\n\n문단 둘")
+    assert "문단 하나\\" not in result
+    assert "문단 하나\n\n문단 둘" in result
+
+
+def test_does_not_add_hard_break_around_list_items():
+    result = markdown_to_confluence_markdown_macro("설명\n- 목록1\n- 목록2")
+    assert "설명\\" not in result
+    assert "목록1\\" not in result
+
+
+def test_does_not_add_hard_break_around_headings():
+    result = markdown_to_confluence_markdown_macro("# 제목\n문단 내용")
+    assert "제목\\" not in result
+
+
+def test_does_not_add_hard_break_around_table_rows():
+    result = markdown_to_confluence_markdown_macro("설명\n| a | b |\n|---|---|")
+    assert "설명\\" not in result
+
+
+def test_does_not_add_trailing_hard_break_at_end_of_text():
+    result = markdown_to_confluence_markdown_macro("마지막 줄")
+    assert "마지막 줄\\" not in result
+    assert "마지막 줄]]>" in result
