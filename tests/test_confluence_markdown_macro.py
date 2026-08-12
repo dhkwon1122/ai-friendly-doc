@@ -81,23 +81,53 @@ def test_does_not_add_hard_break_across_blank_line():
     assert "문단 하나\n\n문단 둘" in result
 
 
-def test_does_not_add_hard_break_around_list_items():
-    result = markdown_to_confluence_markdown_macro("설명\n- 목록1\n- 목록2")
-    assert "설명\\" not in result
-    assert "목록1\\" not in result
-
-
-def test_does_not_add_hard_break_around_headings():
-    result = markdown_to_confluence_markdown_macro("# 제목\n문단 내용")
-    assert "제목\\" not in result
-
-
-def test_does_not_add_hard_break_around_table_rows():
-    result = markdown_to_confluence_markdown_macro("설명\n| a | b |\n|---|---|")
-    assert "설명\\" not in result
-
-
 def test_does_not_add_trailing_hard_break_at_end_of_text():
     result = markdown_to_confluence_markdown_macro("마지막 줄")
     assert "마지막 줄\\" not in result
     assert "마지막 줄]]>" in result
+
+
+# ---- 서로 다른 블록 사이 빈 줄 보정 ----------------------------------------
+
+
+def test_inserts_blank_line_before_table_that_follows_paragraph_directly():
+    # 표 바로 앞에 빈 줄이 없으면 대부분의 마크다운 파서(Confluence의
+    # Markdown 매크로 포함)가 표를 별도 블록으로 인식하지 못하고 그냥
+    # 앞 문단에 붙은 텍스트로 취급한다 - 그러면 표 전체가 한 줄로 뭉개져
+    # 보인다. 그래서 빈 줄을 자동으로 보정해 넣는다.
+    result = markdown_to_confluence_markdown_macro("설명\n| a | b |\n|---|---|")
+    assert "설명\\" not in result  # 하드 브레이크가 아니라
+    assert "설명\n\n| a | b |\n|---|---|" in result  # 빈 줄로 분리돼야 한다
+
+
+def test_inserts_blank_line_before_list_that_follows_paragraph_directly():
+    result = markdown_to_confluence_markdown_macro("설명\n- 목록1\n- 목록2")
+    assert "설명\\" not in result
+    assert "설명\n\n- 목록1\n- 목록2" in result
+
+
+def test_inserts_blank_line_around_heading_that_touches_paragraph():
+    result = markdown_to_confluence_markdown_macro("# 제목\n문단 내용")
+    assert "제목\\" not in result
+    assert "# 제목\n\n문단 내용" in result
+
+
+def test_does_not_insert_blank_line_between_consecutive_table_rows():
+    # 표 행끼리는 빈 줄 없이 붙어 있어야 하나의 표로 인식된다 - 여기서
+    # 빈 줄을 끼워 넣으면 오히려 표가 깨진다.
+    result = markdown_to_confluence_markdown_macro("| a | b |\n|---|---|\n| 1 | 2 |")
+    assert "| a | b |\n|---|---|\n| 1 | 2 |" in result
+
+
+def test_does_not_insert_blank_line_between_consecutive_list_items():
+    result = markdown_to_confluence_markdown_macro("- 목록1\n- 목록2")
+    assert "- 목록1\n- 목록2" in result
+
+
+def test_does_not_disturb_nested_indented_sub_list():
+    # 번호 항목 아래에 들여쓴 하위 목록은 상위 목록에 딸린 구조이므로,
+    # 빈 줄이나 하드 브레이크를 끼워 넣지 않고 원본 그대로 둬야 한다
+    # (마크다운 자체의 들여쓰기 문법이 중첩 관계를 표현한다).
+    md = "1. 첫 단계\n - 세부 A\n - 세부 B\n2. 두 번째 단계"
+    result = markdown_to_confluence_markdown_macro(md)
+    assert md in result
