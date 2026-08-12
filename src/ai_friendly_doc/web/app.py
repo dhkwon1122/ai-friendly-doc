@@ -20,7 +20,7 @@ from ..analyzer import PageReport, analyze_page, analyze_page_findings, generate
 from ..config import DEFAULT_WEB_BASE_URL, ConfluenceConfig, parse_bool_env
 from ..confluence_client import ConfluenceClient
 from ..confluence_markdown_macro import escape_markdown_link_text, markdown_to_confluence_markdown_macro
-from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES, score_document
+from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES, check_guideline_compliance
 from ..llm_review import storage_html_to_plain_text
 from ..report import render_report
 from ..rules import Severity, Suggestion
@@ -547,7 +547,7 @@ def analyze_revise(
         # 목록으로(그래도 동작한다 - 시스템 프롬프트의 가이드라인만으로 다시
         # 쓴다) 수정본을 생성한다.
         prior_suggestions = suggestions_by_page.get(page.id, [])
-        revised_document, unresolved, revision_error = generate_page_revision(page, prior_suggestions)
+        revised_document, unresolved, verified, revision_error = generate_page_revision(page, prior_suggestions)
         suggestions = list(prior_suggestions)
         if revision_error:
             suggestions.append(
@@ -572,18 +572,31 @@ def analyze_revise(
                 )
                 for s in unresolved
             )
+        # 수정본이 없으면(생성 실패) 수정본용 상태 자체가 의미 없으므로 None -
+        # 리포트는 이 값이 있을 때만 "수정본 상태" 컬럼을 추가로 보여준다.
+        # 수정본은 평문이라 규칙 엔진이 못 돌고 LLM 재검증에만 의존하므로
+        # rule_engine_ran=False로 넘긴다 - verified가 False면(검증 자체가
+        # 실패) 전 항목이 "확인 불가"로 표시된다.
+        revision_guideline_compliance = (
+            check_guideline_compliance(unresolved, llm_configured=verified, rule_engine_ran=False)
+            if revised_document is not None
+            else None
+        )
         reports.append(
             PageReport(
                 page=page,
                 suggestions=suggestions,
                 # AI 분석을 이미 거친 페이지만 "LLM으로 확인됨"으로 채점한다 -
                 # 안 거쳤으면 findings 자체가 검증되지 않았으므로 가이드라인
-                # 점수는 "확인 불가"로 남아야 한다.
-                guideline_score=score_document(suggestions, llm_configured=page.id in suggestions_by_page),
+                # 준수 여부는 "확인 불가"로 남아야 한다.
+                guideline_compliance=check_guideline_compliance(
+                    suggestions, llm_configured=page.id in suggestions_by_page
+                ),
                 original_document=storage_html_to_plain_text(
                     page.storage_html, max_chars=None, attachments=page.attachments
                 ),
                 revised_document=revised_document,
+                revision_guideline_compliance=revision_guideline_compliance,
             )
         )
 

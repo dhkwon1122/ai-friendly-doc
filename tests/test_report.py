@@ -2,7 +2,7 @@ import markdown as md
 
 from ai_friendly_doc.analyzer import PageReport
 from ai_friendly_doc.confluence_client import ConfluencePage
-from ai_friendly_doc.guidelines import score_document
+from ai_friendly_doc.guidelines import check_guideline_compliance
 from ai_friendly_doc.report import render_page_section, render_report
 from ai_friendly_doc.rules import Severity, Suggestion
 
@@ -17,14 +17,16 @@ def make_page_report(
     suggestions: list[Suggestion] | None = None,
     revised_document: str | None = None,
     web_url: str = "https://example.atlassian.net/wiki/spaces/ENG/pages/123",
+    revision_guideline_compliance=None,
 ) -> PageReport:
     suggestions = suggestions or []
     return PageReport(
         page=make_page(web_url=web_url),
         suggestions=suggestions,
-        guideline_score=score_document(suggestions, llm_configured=False),
+        guideline_compliance=check_guideline_compliance(suggestions, llm_configured=False),
         original_document="원본 내용",
         revised_document=revised_document,
+        revision_guideline_compliance=revision_guideline_compliance,
     )
 
 
@@ -85,3 +87,33 @@ def test_revised_document_line_breaks_survive_markdown_to_html_conversion():
     # 실제로 표시될 때 줄바꿈이 사라진다.
     html_without_fenced_code = md.markdown(section, extensions=["tables"])
     assert "<pre>" not in html_without_fenced_code
+
+
+# ---- 가이드라인 표: 점수 미표시 + 수정본 상태 컬럼 -------------------------
+
+
+def test_guideline_checklist_does_not_show_a_score():
+    section = render_page_section(make_page_report())
+    assert "점" not in section  # "86점" 같은 점수 표기가 더 이상 없어야 한다
+    assert "핵심 가이드라인 준수" in section
+
+
+def test_guideline_checklist_has_single_status_column_when_no_revision_compliance():
+    section = render_page_section(make_page_report(revised_document=None))
+    assert "| 가이드라인 | 상태 |" in section
+    assert "수정본 상태" not in section
+
+
+def test_guideline_checklist_adds_revision_status_column_when_revision_verified():
+    revision_compliance = check_guideline_compliance([], llm_configured=True, rule_engine_ran=False)
+    section = render_page_section(
+        make_page_report(revised_document="# 수정본", revision_guideline_compliance=revision_compliance)
+    )
+    assert "| 가이드라인 | 원본 상태 | 수정본 상태 |" in section
+    assert "✅ 준수" in section
+
+
+def test_summary_table_does_not_include_score_column():
+    report = render_report([make_page_report()])
+    assert "핵심 가이드 점수" not in report
+    assert "점" not in report.split("---")[0]  # 요약 표 부분에는 점수 표기가 없어야 한다

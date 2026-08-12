@@ -14,7 +14,7 @@ os.environ.setdefault("CONFLUENCE_BASE_URL", "https://example.atlassian.net/wiki
 
 from ai_friendly_doc.analyzer import PageReport
 from ai_friendly_doc.confluence_client import ConfluencePage
-from ai_friendly_doc.guidelines import score_document
+from ai_friendly_doc.guidelines import check_guideline_compliance
 from ai_friendly_doc.web.app import (
     _build_email_subject,
     _decode_revisions,
@@ -35,7 +35,7 @@ def make_page_report(title: str, revised_document: str | None) -> PageReport:
     return PageReport(
         page=page,
         suggestions=[],
-        guideline_score=score_document([], llm_configured=False),
+        guideline_compliance=check_guideline_compliance([], llm_configured=False),
         original_document="원본 내용",
         revised_document=revised_document,
     )

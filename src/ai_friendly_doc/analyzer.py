@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .confluence_client import ConfluencePage
-from .guidelines import ScoreReport, score_document
+from .guidelines import GuidelineComplianceReport, check_guideline_compliance
 from .llm_review import (
     LLMReviewError,
     generate_verified_revision,
@@ -22,11 +22,16 @@ from .rules import DEFAULT_RULES, Rule, Severity, Suggestion
 class PageReport:
     page: ConfluencePage
     suggestions: list[Suggestion]
-    guideline_score: ScoreReport
+    guideline_compliance: GuidelineComplianceReport
     original_document: str
     # LLM이 만든, 발견 사항/수정안을 반영해 다시 쓴 문서 전체. LLM 미설정/실패면 None
     # (원본은 항상 있지만, 수정본은 LLM 없이는 만들 수 없음).
     revised_document: str | None
+    # 수정본이 가이드라인을 실제로 지키는지 재검증한 결과. 수정본 자체가
+    # 없거나(revised_document가 None), 검증을 아예 안 거친 경로(CLI의
+    # analyze_page() 등)에서는 None이다 - 리포트는 이 값이 있을 때만
+    # "수정본 상태" 컬럼을 추가로 보여준다.
+    revision_guideline_compliance: GuidelineComplianceReport | None = None
 
 
 def _check_rules(page: ConfluencePage, rules: list[Rule] | None) -> list[Suggestion]:
@@ -44,6 +49,12 @@ def analyze_page(page: ConfluencePage, rules: list[Rule] | None = None) -> PageR
     CLI처럼 한 번의 호출로 전부 필요한 경우에 쓴다. 웹 UI는 "AI 분석"과
     "최종 수정본 제안" 버튼을 독립적으로 두기 위해 이 함수 대신
     analyze_page_findings()/generate_page_revision()을 따로 호출한다.
+
+    여기서 만드는 수정본은 review_with_llm()의 best-effort 생성 결과라
+    (호출 수를 늘리지 않으려고) 별도 검증/보정을 거치지 않는다 - 그래서
+    반환하는 PageReport.revision_guideline_compliance는 항상 None이다.
+    "수정본이 실제로 가이드라인을 지키는지" 검증된 상태를 보려면 웹 UI의
+    "최종 수정본 제안" 버튼(generate_page_revision)을 쓴다.
     """
     llm_configured = is_llm_configured()
 
@@ -79,12 +90,12 @@ def analyze_page(page: ConfluencePage, rules: list[Rule] | None = None) -> PageR
     # LLM 호출이 실패했으면 LLM 전용 가이드라인은 검증되지 않은 것이므로,
     # "확인 불가"로 표시되도록 llm_configured=False와 동일하게 취급한다
     # (설정은 됐지만 이번 검토에서 실제로 확인되지는 않았다는 뜻).
-    guideline_score = score_document(suggestions, llm_configured=llm_succeeded)
+    guideline_compliance = check_guideline_compliance(suggestions, llm_configured=llm_succeeded)
 
     return PageReport(
         page=page,
         suggestions=suggestions,
-        guideline_score=guideline_score,
+        guideline_compliance=guideline_compliance,
         original_document=original_document,
         revised_document=revised_document,
     )
@@ -118,12 +129,12 @@ def analyze_page_findings(page: ConfluencePage, rules: list[Rule] | None = None)
                 )
             )
 
-    guideline_score = score_document(suggestions, llm_configured=llm_succeeded)
+    guideline_compliance = check_guideline_compliance(suggestions, llm_configured=llm_succeeded)
 
     return PageReport(
         page=page,
         suggestions=suggestions,
-        guideline_score=guideline_score,
+        guideline_compliance=guideline_compliance,
         original_document=original_document,
         revised_document=None,
     )
@@ -131,7 +142,7 @@ def analyze_page_findings(page: ConfluencePage, rules: list[Rule] | None = None)
 
 def generate_page_revision(
     page: ConfluencePage, suggestions: list[Suggestion] | None = None
-) -> tuple[str | None, list[Suggestion], str | None]:
+) -> tuple[str | None, list[Suggestion], bool, str | None]:
     """최종 수정본만 별도로 (재)생성한다. 웹 UI의 "최종 수정본 제안" 버튼이
     쓴다 - AI 분석(analyze_page_findings)과 독립적으로 호출/재시도할 수
     있다.
@@ -141,7 +152,9 @@ def generate_page_revision(
     참고) - 검증 없이 내놓은 수정본은 실제로는 가이드라인을 잘 안 지킬 수
     있어서 신뢰하기 어렵다.
 
-    (revised_document, 끝까지 해결 못한 문제 목록, 실패 사유) 튜플을
-    반환한다.
+    (revised_document, 끝까지 해결 못한 문제 목록, 검증 성공 여부, 실패
+    사유) 튜플을 반환한다. 호출자는 검증 성공 여부와 남은 문제 목록으로
+    수정본용 GuidelineComplianceReport를 직접 만들어 PageReport.
+    revision_guideline_compliance에 채워 넣는다(예: web/app.py).
     """
     return generate_verified_revision(page, suggestions)

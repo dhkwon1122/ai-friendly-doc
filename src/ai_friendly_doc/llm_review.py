@@ -23,9 +23,9 @@
 리포트만 보고도 알 수 있게 한다 (예: max_tokens가 모델의 실제 최대
 컨텍스트 길이를 넘어서 서버가 요청 자체를 거부한 경우 등).
 
-1·2번 호출은 실패하면(타임아웃, 응답 잘림, 깨진 JSON 등) 규칙 기반
-가이드라인 점수 계산에서 LLM 전용 항목들이 전부 "확인 불가"로 표시된다
-(guidelines.score_document 참고). 실제 페이지로 반복 테스트하면 규칙
+1·2번 호출은 실패하면(타임아웃, 응답 잘림, 깨진 JSON 등) 가이드라인 준수
+판별에서 LLM 전용 항목들이 전부 "확인 불가"로 표시된다
+(guidelines.check_guideline_compliance 참고). 실제 페이지로 반복 테스트하면 규칙
 위반이 많아 출력이 길어지거나 그때그때 모델 상태에 따라 이 호출이 가끔
 실패할 수 있어서, 같은 문서를 여러 번 분석했을 때 결과가 "준수"와
 "확인 불가"를 오가는 것처럼 보일 수 있다. 이를 줄이기 위해 (a) 규칙
@@ -635,34 +635,42 @@ def verify_revision_guideline_compliance(page: ConfluencePage, revised_text: str
 
 def generate_verified_revision(
     page: ConfluencePage, suggestions: list[Suggestion] | None = None
-) -> tuple[str | None, list[Suggestion], str | None]:
+) -> tuple[str | None, list[Suggestion], bool, str | None]:
     """최종 수정본을 만들고, 실제로 가이드라인을 지키는지 검증해서 부족한
     부분이 있으면 최대 REVISION_REFINE_MAX_ROUNDS번 다시 고치기를
     반복한다. 검증 없이 내놓은 수정본은 실제로는 가이드라인을 안 지킬 수
     있어서 신뢰하기 어렵다 - 그래서 만들기만 하고 끝내지 않고, 만든 결과를
     다시 검토해서 확인한다.
 
-    (revised_document, 끝까지 해결 못한 문제 목록, 실패 사유) 튜플을
-    반환한다. 첫 수정본 생성 자체가 실패하면 (None, [], 실패 사유)를
-    반환한다. 검증/보정 라운드 도중 호출이 실패하면, 그때까지 만든
-    수정본은 버리지 않고 그대로 유지한 채 멈춘다 - 검증 실패가 이미 만든
-    수정본까지 날려버리면 안 되기 때문이다. 남은 문제는 리포트에서 "수정본
-    에서도 해결되지 않음"으로 따로 표시할 수 있게 그대로 반환한다(LLM이
-    끝내 못 고친 부분 - 예: 확인이 필요한 이미지 실제 내용 등 - 을
-    숨기지 않고 드러낸다).
+    (revised_document, 끝까지 해결 못한 문제 목록, 검증 성공 여부, 실패
+    사유) 튜플을 반환한다. 첫 수정본 생성 자체가 실패하면
+    (None, [], False, 실패 사유)를 반환한다. 검증 호출이 한 번도 성공하지
+    못하면(예: 매번 네트워크 오류) "문제 없음"과 "검증 자체를 못 했음"을
+    구분해야 하므로 verified=False로 반환한다 - 호출자는 verified가
+    False면 이 revised_document의 가이드라인 준수 여부를 "확인 불가"로
+    다뤄야 한다(진짜로 다 지켰는지 확인된 게 아니다).
+
+    검증/보정 라운드 도중 호출이 실패하면, 그때까지 만든 수정본은 버리지
+    않고 그대로 유지한 채 멈춘다 - 검증 실패가 이미 만든 수정본까지
+    날려버리면 안 되기 때문이다. 남은 문제는 리포트에서 "수정본에서도
+    해결되지 않음"으로 따로 표시할 수 있게 그대로 반환한다(LLM이 끝내
+    못 고친 부분 - 예: 확인이 필요한 이미지 실제 내용 등 - 을 숨기지
+    않고 드러낸다).
     """
     revised_document, error = generate_revision(page, suggestions)
     if revised_document is None:
-        return None, [], error
+        return None, [], False, error
 
     model = os.environ.get("LLM_MODEL")
     timeout_raw = os.environ.get("LLM_TIMEOUT_SECONDS")
     timeout = float(timeout_raw) if timeout_raw else DEFAULT_TIMEOUT_SECONDS
 
     remaining: list[Suggestion] = []
+    verified = False
     for _round in range(REVISION_REFINE_MAX_ROUNDS):
         try:
             remaining = verify_revision_guideline_compliance(page, revised_document)
+            verified = True
         except LLMReviewError as e:
             _logger.warning("수정본 검증 호출 실패: %s", e)
             break
@@ -673,8 +681,9 @@ def generate_verified_revision(
             _logger.warning("수정본 보정 호출 실패: %s", refine_error)
             break
         revised_document = refined
+        verified = False  # 방금 새로 고친 텍스트는 아직 검증 전이다 - 다음 라운드에서 다시 검증한다
 
-    return revised_document, remaining, None
+    return revised_document, remaining, verified, None
 
 
 def review_with_llm(page: ConfluencePage, rule_suggestions: list[Suggestion] | None = None) -> LLMReviewResult:

@@ -1,14 +1,18 @@
-"""AI-friendly 문서 작성 가이드라인 정의와, 그 준수 여부로 문서를 점수화하는 로직.
+"""AI-friendly 문서 작성 가이드라인 정의와, 그 준수 여부를 항목별로 판별하는 로직.
 
-핵심 가이드라인(core) 7개 + 추가 권장 가이드(extra) 7개로 구성된다. 점수는
-핵심 가이드라인만 대상으로 한다 (추가 권장 가이드는 리포트에 항목으로는
-나오지만 점수에는 반영하지 않음).
+핵심 가이드라인(core) 7개 + 추가 권장 가이드(extra) 7개로 구성된다. 준수
+여부 판별은 핵심 가이드라인만 대상으로 한다 (추가 권장 가이드는 리포트에
+항목으로는 나오지만 준수/위반 판별에는 포함하지 않음).
 
 각 가이드라인은 규칙 엔진(rules/starter.py)의 결정론적 체크나 LLM 검토
 (llm_review.py)가 만드는 Suggestion.guideline_id로 연결된다. llm_only=True인
 가이드라인은 결정론적으로 판별할 방법이 없어 LLM 검토가 설정돼 있을 때만
-확인 가능하다 - LLM이 꺼져 있으면 "확인 불가"로 표시하고 점수 계산에서
-제외한다 (지키지 않은 것으로 간주하지 않음).
+확인 가능하다 - LLM이 꺼져 있으면 "확인 불가"로 표시한다(지키지 않은 것으로
+간주하지 않음).
+
+점수(percentage)는 매기지 않는다 - 항목별 준수/위반/확인 불가 상태만
+그대로 보여준다. 하나의 숫자로 뭉뚱그리면 어떤 항목이 실제로 문제인지
+가려지기 쉽고, "몇 점이어야 충분한지" 기준도 애매해서다.
 """
 
 from __future__ import annotations
@@ -56,14 +60,25 @@ class GuidelineResult:
 
 
 @dataclass(frozen=True)
-class ScoreReport:
+class GuidelineComplianceReport:
     results: list[GuidelineResult]  # 핵심 가이드라인 7개 전부, 상태 무관하게 포함
-    checked_count: int  # "unverifiable"을 제외한 항목 수
-    compliant_count: int
-    score: int | None  # 0~100. checked_count가 0이면 계산 불가(None)
 
 
-def score_document(suggestions: list[Suggestion], llm_configured: bool) -> ScoreReport:
+def check_guideline_compliance(
+    suggestions: list[Suggestion], llm_configured: bool, rule_engine_ran: bool = True
+) -> GuidelineComplianceReport:
+    """suggestions에 담긴 위반 사항으로 핵심 가이드라인 7개의 준수 여부를 판별한다.
+
+    rule_engine_ran=True(기본값)면 llm_only=False인 가이드라인은 결정론적
+    규칙 엔진(rules/starter.py)이 이미 원본 문서를 검사했다고 보고, 위반이
+    없으면 "준수"로 처리한다.
+
+    최종 수정본은 평문이라 규칙 엔진을 아예 돌릴 수 없고 LLM 재검증에만
+    의존한다 - 이 경우 rule_engine_ran=False를 넘긴다. 그러면 llm_only
+    여부와 무관하게, llm_configured(이 경우 "검증이 실제로 성공했는지")가
+    False일 때 모든 항목이 "확인 불가"로 표시된다 - 검증 자체를 못 했으면
+    llm_only가 아닌 항목도 준수 여부를 판단할 근거가 없기 때문이다.
+    """
     violation_counts: dict[str, int] = {}
     for s in suggestions:
         if s.guideline_id:
@@ -72,21 +87,13 @@ def score_document(suggestions: list[Suggestion], llm_configured: bool) -> Score
     results: list[GuidelineResult] = []
     for guideline in CORE_GUIDELINES:
         count = violation_counts.get(guideline.id, 0)
+        needs_llm = guideline.llm_only or not rule_engine_ran
         if count > 0:
             status = "violated"
-        elif guideline.llm_only and not llm_configured:
+        elif needs_llm and not llm_configured:
             status = "unverifiable"
         else:
             status = "compliant"
         results.append(GuidelineResult(guideline=guideline, status=status, violation_count=count))
 
-    checked = [r for r in results if r.status != "unverifiable"]
-    compliant = [r for r in checked if r.status == "compliant"]
-    score = round(100 * len(compliant) / len(checked)) if checked else None
-
-    return ScoreReport(
-        results=results,
-        checked_count=len(checked),
-        compliant_count=len(compliant),
-        score=score,
-    )
+    return GuidelineComplianceReport(results=results)
