@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import html as html_module
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from ..analyzer import PageReport, analyze_page, analyze_page_findings, generate_page_revision
 from ..config import ConfluenceConfig, parse_bool_env
 from ..confluence_client import ConfluenceClient
+from ..confluence_storage import markdown_to_confluence_storage
 from ..guidelines import CORE_GUIDELINES, EXTRA_GUIDELINES, score_document
 from ..llm_review import storage_html_to_plain_text
 from ..report import render_report
@@ -283,6 +285,74 @@ def _decode_suggestions_by_page(suggestions_json: str) -> dict[str, list[Suggest
     return result
 
 
+def _encode_revisions(reports: list[PageReport]) -> str:
+    """이메일 제목(원본 문서 제목)과 본문 맨 위 "Confluence에 붙여넣기" 블록을
+    만드는 데 필요한 최소 정보만 JSON으로 직렬화한다. report_markdown과
+    마찬가지로 hidden 필드로 화면에 실어 보내서, 이메일 발송 시 재분석 없이
+    그대로 재사용한다."""
+    return json.dumps(
+        [
+            {"title": r.page.title, "web_url": r.page.web_url, "revised_document": r.revised_document}
+            for r in reports
+        ],
+        ensure_ascii=False,
+    )
+
+
+def _decode_revisions(revisions_json: str) -> list[dict]:
+    if not revisions_json:
+        return []
+    try:
+        raw = json.loads(revisions_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict) and item.get("title")]
+
+
+def _build_email_subject(revisions: list[dict]) -> str:
+    if not revisions:
+        return "[AI Friendly 문서 개선 제안] 수정 제안"
+    first_title = revisions[0]["title"]
+    suffix = f" 외 {len(revisions) - 1}건" if len(revisions) > 1 else ""
+    return f"[AI Friendly 문서 개선 제안] {first_title} 수정 제안{suffix}"
+
+
+def _render_copyable_revision_block(revisions: list[dict]) -> str:
+    """이메일 본문 맨 앞에 넣을, "그대로 복사해서 Confluence 새 페이지 소스에
+    붙여넣기" 위한 블록을 만든다. 최종 수정본을 Confluence storage format
+    (XHTML)으로 바꿔서, 사람이 읽는 서식이 아니라 텍스트 그대로 보여준다 -
+    그래야 전체 선택 → 복사 → Confluence 소스 편집기에 붙여넣기가 그대로
+    통한다(렌더링된 서식을 복사하면 원본 마크업이 아니라 브라우저가 임의로
+    변환한 HTML이 복사돼서 깨지기 쉽다).
+    """
+    blocks_with_content = [r for r in revisions if (r.get("revised_document") or "").strip()]
+    if not blocks_with_content:
+        return ""
+
+    parts = [
+        '<div style="margin-bottom:1.5rem;">',
+        "<h2>📋 최종 수정 제안 (Confluence에 바로 붙여넣기)</h2>",
+        "<p>아래 내용을 전체 선택해서 복사한 뒤, Confluence에서 새 페이지를 만들고 "
+        "편집기 오른쪽 위 <strong>⋯(더보기) 메뉴 → 소스 편집기</strong>를 열어 그대로 "
+        "붙여넣으면 서식이 적용된 페이지가 만들어집니다.</p>",
+    ]
+    for revision in blocks_with_content:
+        storage = markdown_to_confluence_storage(revision["revised_document"])
+        if not storage.strip():
+            continue
+        title = html_module.escape(revision["title"])
+        parts.append(f"<h3>{title}</h3>")
+        parts.append(
+            '<pre style="white-space:pre-wrap;word-break:break-word;background:#f4f5f7;'
+            'border:1px solid #ddd;border-radius:6px;padding:0.75rem;font-size:0.85rem;">'
+            f"{html_module.escape(storage)}</pre>"
+        )
+    parts.append("</div><hr>")
+    return "".join(parts)
+
+
 @app.get("/analyze", response_class=HTMLResponse)
 def analyze_form(request: Request):
     user = current_user(request)
@@ -383,6 +453,7 @@ def analyze_submit(request: Request, mode: str = Form(...), value: str = Form(..
         # "최종 수정본 제안" 버튼을 누르면 이 문제 목록을 이어서 참고할 수
         # 있도록 hidden 필드로 실어 보낸다.
         suggestions_json=_encode_suggestions_by_page(reports),
+        revisions_json=_encode_revisions(reports),
         **guideline_context,
     )
 
@@ -471,6 +542,7 @@ def analyze_revise(
         report_markdown=report_markdown,
         reports=reports,
         suggestions_json=_encode_suggestions_by_page(reports),
+        revisions_json=_encode_revisions(reports),
         **guideline_context,
     )
 
@@ -512,6 +584,7 @@ def analyze_email(
     value: str = Form(...),
     report_markdown: str = Form(""),
     page_count: int = Form(0),
+    revisions_json: str = Form(""),
 ):
     user = current_user(request)
     if not user:
@@ -523,6 +596,7 @@ def analyze_email(
     email = f"{user.username}@samsung.com"
 
     reports = None
+    revisions: list[dict] = []
     # 다운로드와 마찬가지로, /analyze에서 이미 만들어둔 리포트가 hidden
     # 필드로 넘어오면 재사용한다 - 그렇지 않으면 화면에 이미 보이는 결과를
     # 메일로 보내는 것뿐인데도 Confluence 재조회 + LLM 재검토가 통째로 다시
@@ -554,6 +628,9 @@ def analyze_email(
 
         report_markdown = render_report(reports)
         page_count = len(reports)
+        revisions = json.loads(_encode_revisions(reports))
+    else:
+        revisions = _decode_revisions(revisions_json)
 
     # fenced_code가 없으면 최종 수정본을 감싼 ```...``` 블록이 코드 블록으로
     # 인식되지 않고 일반 문단 취급돼서, 그 안의 줄바꿈이 markdown 문법상
@@ -568,11 +645,15 @@ def analyze_email(
         **guideline_context,
     )
 
+    # 메일 본문은 화면에 보이는 report_html과 다르다 - 최종 수정본을
+    # Confluence에 바로 붙여넣을 수 있는 블록을 맨 앞에 추가한다.
+    email_body_html = _render_copyable_revision_block(revisions) + report_html
+
     try:
         send_report_email(
             email,
-            subject=f"[ai-friendly-doc] 분석 리포트 ({page_count}개 페이지)",
-            body_html=report_html,
+            subject=_build_email_subject(revisions),
+            body_html=email_body_html,
         )
     except MailConfigError as e:
         return render(request, "analyze.html", error=str(e), **render_context)
