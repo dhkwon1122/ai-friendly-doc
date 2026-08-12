@@ -126,8 +126,12 @@ def markdown_to_confluence_storage(text: str) -> str:
         ):
             paragraph_lines.append(lines[i].rstrip())
             i += 1
-        paragraph_text = " ".join(p.strip() for p in paragraph_lines)
-        parts.append(f"<p>{_inline_to_storage(paragraph_text)}</p>")
+        # 줄바꿈은 공백으로 합치지 않고 <br/>로 보존한다 - HTML은 순수 개행을
+        # 공백으로 접어버리므로(white-space 접기), 소스에 \n을 그대로 남겨둬도
+        # 붙여넣은 결과에서는 줄바꿈 없이 한 줄로 붙어버린다. 명시적으로
+        # <br/> 태그를 넣어야 실제로 줄이 나뉜다.
+        paragraph_html = "<br/>".join(_inline_to_storage(p.strip()) for p in paragraph_lines)
+        parts.append(f"<p>{paragraph_html}</p>")
 
     # 블록 사이에 개행을 넣지 않는다 - Confluence 소스 편집기에 붙여넣을 때
     # 태그 사이의 순수 공백/개행이 예상 못한 빈 줄바꿈으로 해석되는 경우가
