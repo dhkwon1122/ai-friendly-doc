@@ -126,8 +126,13 @@ REVISION_SYSTEM_PROMPT = """\
 - 목록에 있는 문제와 수정안을 모두 반영합니다.
 - 목록에 없는, 문제가 없던 부분은 그대로 유지합니다 (불필요하게 다시
   쓰지 않습니다).
-- 원본과 같은 평문 형식(제목은 #/##/###, 표는 | a | b |, 목록은 -)을
-  유지합니다.
+- 원본과 같은 평문 형식(제목은 #/##/###, 표는 | a | b |)을 유지합니다.
+- **목록은 원본의 순서 여부를 그대로 보존하세요**: 원본 문서에서 "1. ",
+  "2. "처럼 번호가 매겨진 순서 목록(순서/절차가 중요한 단계 목록 등)은
+  수정본에서도 반드시 "1. ", "2. ", "3. "처럼 1부터 시작해 번호를 하나씩
+  올려가며 씁니다(항목마다 "1."을 반복하면 안 됩니다). 번호가 없던 순서
+  없는 목록은 그대로 "- "를 씁니다. 항목을 추가/삭제하지 않는 한 원본의
+  항목 순서도 바꾸지 마세요.
 - 다른 설명, 인사말, 코드펜스 없이 수정된 문서 본문만 그대로 출력하세요.
 """
 
@@ -176,11 +181,21 @@ def storage_html_to_plain_text(storage_html: str, max_chars: int | None = DEFAUL
                 text = child.get_text(strip=True)
                 if text:
                     lines.append(text)
-            elif name in ("ul", "ol"):
+            elif name == "ul":
                 for li in child.find_all("li", recursive=False):
                     text = li.get_text(strip=True)
                     if text:
                         lines.append(f"- {text}")
+            elif name == "ol":
+                # ol/ul을 둘 다 "- "로 뭉개면 원본이 순서가 있는(번호 매겨진)
+                # 목록이었다는 사실 자체가 LLM에게 안 보이게 되고, 그러면
+                # 수정본에서 순서 목록이 순서 없는 목록으로 바뀌거나 항목
+                # 순서가 흐트러지기 쉽다 - 실제 번호를 그대로 매겨서 원본이
+                # 순서가 있었다는 사실과 그 순서를 함께 전달한다.
+                items = [li.get_text(strip=True) for li in child.find_all("li", recursive=False)]
+                for idx, text in enumerate(items, start=1):
+                    if text:
+                        lines.append(f"{idx}. {text}")
             elif name == "table":
                 for row in child.find_all("tr"):
                     cells = [c.get_text(strip=True) for c in row.find_all(["th", "td"])]

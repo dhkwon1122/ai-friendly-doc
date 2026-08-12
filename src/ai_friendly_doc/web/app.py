@@ -336,10 +336,11 @@ def _render_copyable_revision_block(revisions: list[dict]) -> str:
     통한다(렌더링된 서식을 복사하면 원본 마크업이 아니라 브라우저가 임의로
     변환한 HTML이 복사돼서 깨지기 쉽다).
 
-    소스 편집기는 페이지 본문만 편집하고 제목은 별도 입력란이라, 제안
-    제목은 복사용 소스 밖에 안내 문구로 따로 보여준다. 원본 문서 링크는
-    반대로 본문에 포함돼야 의미가 있으므로, 복사용 소스 맨 위에 실제
-    Confluence storage 문단으로 끼워 넣는다.
+    소스 편집기는 페이지 본문만 편집하고 제목은 별도 입력란이다 - 페이지
+    제목은 원본 문서 제목을 그대로 쓰면 되므로 별도 제안 제목은 안내하지
+    않는다. 원본 문서 링크는 본문에 포함돼야 의미가 있으므로, 복사용 소스
+    맨 위에 실제 Confluence storage 문단으로 끼워 넣고, 그 바로 아래에
+    수정본 내용이 이어지게 한다.
     """
     blocks_with_content = [r for r in revisions if (r.get("revised_document") or "").strip()]
     if not blocks_with_content:
@@ -349,10 +350,9 @@ def _render_copyable_revision_block(revisions: list[dict]) -> str:
         '<div style="margin-bottom:1.5rem;">',
         "<h2>📋 최종 수정 제안 (Confluence에 바로 붙여넣기)</h2>",
         "<p>아래 내용을 전체 선택해서 복사한 뒤, Confluence에서 새 페이지를 만들고 "
-        "편집기 오른쪽 위 <strong>⋯(더보기) 메뉴 → 소스 편집기</strong>를 열어 그대로 "
-        "붙여넣으면 서식이 적용된 페이지가 만들어집니다. 소스 편집기는 본문만 "
-        "편집할 수 있어 <strong>제목은 아래 제안 제목을 페이지 제목 입력란에 "
-        "직접 입력</strong>해야 합니다.</p>",
+        "<strong>제목은 원본 문서 제목을 그대로 입력</strong>한 다음, 편집기 오른쪽 위 "
+        "<strong>⋯(더보기) 메뉴 → 소스 편집기</strong>를 열어 그대로 붙여넣으면 서식이 "
+        "적용된 페이지가 만들어집니다.</p>",
     ]
     for revision in blocks_with_content:
         storage = markdown_to_confluence_storage(revision["revised_document"])
@@ -360,11 +360,11 @@ def _render_copyable_revision_block(revisions: list[dict]) -> str:
             continue
         title = revision["title"]
         web_url = revision.get("web_url") or ""
-        suggested_title = html_module.escape(f"{title} (AI 개선 제안)")
 
         # 원본 문서 링크는 본문 안에 있어야 의미가 있으므로, 소스 맨 위에
         # 실제 Confluence storage 문단으로 끼워 넣는다(markdown_to_confluence_storage
-        # 는 이 링크에 대해 모르므로 여기서 직접 조립).
+        # 는 이 링크에 대해 모르므로 여기서 직접 조립). 개행 없이 이어붙여서
+        # 링크 문단 바로 아래에 수정본 내용이 시작되게 한다.
         if web_url:
             link_html = html_module.escape(web_url)
             source_with_link = f'<p><em>원본 문서: <a href="{link_html}">{html_module.escape(title)}</a></em></p>{storage}'
@@ -372,7 +372,6 @@ def _render_copyable_revision_block(revisions: list[dict]) -> str:
             source_with_link = storage
 
         parts.append(f"<h3>{html_module.escape(title)}</h3>")
-        parts.append(f"<p>제안 제목: <strong>{suggested_title}</strong></p>")
         parts.append(
             '<pre style="white-space:pre-wrap;word-break:break-word;background:#f4f5f7;'
             'border:1px solid #ddd;border-radius:6px;padding:0.75rem;font-size:0.85rem;">'

@@ -112,19 +112,32 @@ def test_copyable_revision_block_skips_pages_without_revision_but_keeps_others()
     assert "실패한 페이지" not in block
 
 
-def test_copyable_revision_block_shows_suggested_title_separately_from_source():
-    # 소스 편집기는 본문만 편집하고 제목은 별도 입력란이라, 제안 제목은
-    # 복사용 소스(<pre> 안) 밖에 안내 문구로 나와야 한다.
+def test_copyable_revision_block_tells_user_to_reuse_original_title():
+    # 페이지 제목은 원본 문서 제목을 그대로 쓰면 되므로, 별도로 다른 제목을
+    # 제안하지 않고 "원본 문서 제목을 그대로 입력"하라고 안내해야 한다.
     reports = [make_page_report("비밀번호 정책", "# 수정본")]
     revisions = _decode_revisions(_encode_revisions(reports))
     block = _render_copyable_revision_block(revisions)
 
-    assert "제안 제목" in block
-    assert "비밀번호 정책 (AI 개선 제안)" in block
-    # 제안 제목 문구 자체는 <pre> 블록(복사용 소스) 밖에 있어야 한다.
+    assert "원본 문서 제목을 그대로 입력" in block
+    assert "AI 개선 제안" not in block  # 예전의 "{제목} (AI 개선 제안)" 식 제안 제목은 더 안 보여준다
+    assert "제안 제목" not in block
+
+
+def test_copyable_revision_block_content_starts_right_after_original_link():
+    # 복사용 소스 안에서 원본 문서 링크 문단 바로 아래에 수정본 내용(예:
+    # <h1>)이 이어져야 한다 - 사이에 다른 안내문/여백이 끼어들면 안 된다.
+    reports = [make_page_report("비밀번호 정책", "# 수정본 제목\n\n본문")]
+    revisions = _decode_revisions(_encode_revisions(reports))
+    block = _render_copyable_revision_block(revisions)
+
     pre_start = block.index("<pre")
-    suggested_title_pos = block.index("제안 제목")
-    assert suggested_title_pos < pre_start
+    pre_end = block.index("</pre>")
+    pre_content = block[pre_start:pre_end]
+
+    link_paragraph_end = pre_content.index("&lt;/p&gt;") + len("&lt;/p&gt;")
+    rest = pre_content[link_paragraph_end:]
+    assert rest.startswith("&lt;h1&gt;수정본 제목&lt;/h1&gt;")
 
 
 def test_copyable_revision_block_includes_original_link_inside_copyable_source():
@@ -148,4 +161,11 @@ def test_copyable_revision_block_includes_original_link_inside_copyable_source()
 def test_copyable_revision_block_omits_link_when_web_url_missing():
     revisions = [{"title": "링크 없는 페이지", "web_url": "", "revised_document": "# 수정본"}]
     block = _render_copyable_revision_block(revisions)
-    assert "원본 문서" not in block
+
+    # 안내 문구에는 "원본 문서 제목을 그대로 입력"처럼 일반적인 문구가
+    # 나오지만, web_url이 없으면 복사용 소스(<pre> 안)에는 원본 문서 링크
+    # 문단 자체가 들어가면 안 된다.
+    pre_start = block.index("<pre")
+    pre_end = block.index("</pre>")
+    pre_content = block[pre_start:pre_end]
+    assert "원본 문서" not in pre_content
