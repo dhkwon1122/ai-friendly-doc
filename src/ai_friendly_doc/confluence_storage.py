@@ -129,4 +129,7 @@ def markdown_to_confluence_storage(text: str) -> str:
         paragraph_text = " ".join(p.strip() for p in paragraph_lines)
         parts.append(f"<p>{_inline_to_storage(paragraph_text)}</p>")
 
-    return "\n".join(parts)
+    # 블록 사이에 개행을 넣지 않는다 - Confluence 소스 편집기에 붙여넣을 때
+    # 태그 사이의 순수 공백/개행이 예상 못한 빈 줄바꿈으로 해석되는 경우가
+    # 있어서, 블록 태그(<p>, <h1>...) 자체가 구분자 역할을 하도록 이어붙인다.
+    return "".join(parts)

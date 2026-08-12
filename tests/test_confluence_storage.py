@@ -23,7 +23,7 @@ def test_multiline_paragraph_without_blank_line_merges_into_one_p():
 
 def test_blank_line_separates_paragraphs():
     result = markdown_to_confluence_storage("문단 하나\n\n문단 둘")
-    assert result == "<p>문단 하나</p>\n<p>문단 둘</p>"
+    assert result == "<p>문단 하나</p><p>문단 둘</p>"
 
 
 def test_unordered_list_converts_to_ul():

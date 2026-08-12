@@ -367,7 +367,7 @@ def _render_copyable_revision_block(revisions: list[dict]) -> str:
         # 는 이 링크에 대해 모르므로 여기서 직접 조립).
         if web_url:
             link_html = html_module.escape(web_url)
-            source_with_link = f'<p><em>원본 문서: <a href="{link_html}">{html_module.escape(title)}</a></em></p>\n{storage}'
+            source_with_link = f'<p><em>원본 문서: <a href="{link_html}">{html_module.escape(title)}</a></em></p>{storage}'
         else:
             source_with_link = storage
 
