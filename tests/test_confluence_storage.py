@@ -39,6 +39,36 @@ def test_ordered_list_converts_to_ol():
     assert result == "<ol><li>첫번째</li><li>두번째</li></ol>"
 
 
+def test_ordered_list_with_indented_sub_bullets_stays_one_list():
+    # 번호 항목 아래에 들여쓰기된 "- " 하위 설명이 끼어 있어도 별도의 새
+    # <ol>이 되면 안 된다 - 새 <ol>마다 Confluence가 다시 1번부터 번호를
+    # 매겨서 모든 항목이 "1."로 보이는 문제가 생긴다. 하위 목록은 바로 위
+    # 항목의 <li> 안에 중첩된 <ul>로 들어가고, 번호 목록 자체는 이어져야 한다.
+    md = "1. 첫 단계\n - 세부 A\n - 세부 B\n2. 두 번째 단계\n3. 세 번째 단계"
+    result = markdown_to_confluence_storage(md)
+    assert result == (
+        "<ol>"
+        "<li>첫 단계<ul><li>세부 A</li><li>세부 B</li></ul></li>"
+        "<li>두 번째 단계</li>"
+        "<li>세 번째 단계</li>"
+        "</ol>"
+    )
+
+
+def test_ordered_list_with_blank_lines_between_items_stays_one_list():
+    # 항목 사이에 빈 줄이 하나씩 있는 느슨한(loose) 목록 스타일도 같은
+    # 이유로 하나의 <ol>로 묶여야 한다.
+    md = "1. 항목 하나\n\n2. 항목 둘\n\n3. 항목 셋"
+    result = markdown_to_confluence_storage(md)
+    assert result == "<ol><li>항목 하나</li><li>항목 둘</li><li>항목 셋</li></ol>"
+
+
+def test_ordered_list_ends_when_followed_by_unrelated_paragraph():
+    md = "1. 항목 하나\n2. 항목 둘\n\n그냥 문단입니다."
+    result = markdown_to_confluence_storage(md)
+    assert result == "<ol><li>항목 하나</li><li>항목 둘</li></ol><p>그냥 문단입니다.</p>"
+
+
 def test_table_first_row_becomes_header():
     md = "| 이름 | 나이 |\n| --- | --- |\n| 홍길동 | 30 |"
     result = markdown_to_confluence_storage(md)
